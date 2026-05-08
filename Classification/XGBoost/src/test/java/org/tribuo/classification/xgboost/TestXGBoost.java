@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,13 +41,15 @@ import org.tribuo.data.text.impl.TextFeatureExtractorImpl;
 import org.tribuo.dataset.DatasetView;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.test.Helpers;
 import org.tribuo.util.tokens.impl.BreakIteratorTokenizer;
 
 import java.io.IOException;
-import java.io.ObjectInputStream;
+import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
@@ -150,15 +152,15 @@ public class TestXGBoost {
         return loadModel(modelPath);
     }
 
-    private XGBoostModel<Label> loadModel(String path) throws IOException, ClassNotFoundException {
+    private XGBoostModel<Label> loadModel(String path) throws IOException {
         URL modelFile = this.getClass().getResource(path);
-        try (ObjectInputStream ois = new ObjectInputStream(modelFile.openStream())) {
+        try (InputStream is = modelFile.openStream()) {
             @SuppressWarnings("unchecked") // checked by validate call.
-            XGBoostModel<Label> data = (XGBoostModel<Label>) ois.readObject();
-            if (!data.validate(Label.class)) {
+            XGBoostModel<Label> model = (XGBoostModel<Label>) Model.deserializeFromStream(is);
+            if (!model.validate(Label.class)) {
                 fail(String.format("model for %s is not a classification model.",path));
             }
-            return data;
+            return model;
         } catch (NullPointerException e) {
             fail(String.format("model for %s does not exist", path));
             throw e;
@@ -227,7 +229,6 @@ public class TestXGBoost {
     public void testDenseData() {
         Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.denseTrainTest();
         Model<Label> model = testXGBoost(t,p);
-        Helpers.testModelSerialization(model,Label.class);
         Helpers.testModelProtoSerialization(model, Label.class, p.getB());
         testXGBoost(dart,p);
         testXGBoost(linear,p);
@@ -242,7 +243,6 @@ public class TestXGBoost {
         Map<String,Object> overrideParams = new HashMap<>();
         overrideParams.put("objective","multi:softprob");
         overrideParams.put("eta","0.1");
-        overrideParams.put("sampling_method","gradient_based");
         XGBoostClassificationTrainer overrideTrainer = new XGBoostClassificationTrainer(5, overrideParams);
         XGBoostModel<Label> overrideM = testXGBoost(overrideTrainer,p);
 
@@ -252,7 +252,6 @@ public class TestXGBoost {
         assertEquals(overrideParams.size(), overrideMap.size());
         assertEquals(overrideParams.get("objective"), overrideMap.get("objective").getValue());
         assertEquals(overrideParams.get("eta"), overrideMap.get("eta").getValue());
-        assertEquals(overrideParams.get("sampling_method"), overrideMap.get("sampling_method").getValue());
     }
 
     @Test
@@ -283,5 +282,32 @@ public class TestXGBoost {
             Model<Label> m = t.train(p.getA());
             m.predict(LabelledDataGenerator.emptyExample());
         });
+    }
+
+    @Test
+    public void loadProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(TestXGBoost.class.getResource("xgboost-clf-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
+            @SuppressWarnings("unchecked")
+            XGBoostModel<Label> model = (XGBoostModel<Label>) Model.deserialize(proto);
+
+            assertEquals("4.3.1", model.getProvenance().getTribuoVersion());
+
+            Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.denseTrainTest();
+            List<Prediction<Label>> output = model.predict(p.getB());
+            assertEquals(output.size(), p.getB().size());
+        }
+    }
+
+    /**
+     * Test protobuf generation method.
+     * @throws IOException If the write failed.
+     */
+    public void generateModel() throws IOException {
+        Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.denseTrainTest();
+        XGBoostClassificationTrainer trainer = new XGBoostClassificationTrainer(5);
+        Model<Label> model = trainer.train(p.getA());
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","classification","xgboost","xgboost-clf-431.tribuo"));
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.oracle.labs.mlrg.olcut.provenance.ObjectProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.Provenancable;
 import com.oracle.labs.mlrg.olcut.provenance.ProvenanceUtil;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializable;
 import org.tribuo.protos.ProtoSerializableClass;
 import org.tribuo.protos.ProtoSerializableField;
@@ -29,7 +30,6 @@ import org.tribuo.protos.core.FeatureSetProto;
 import org.tribuo.protos.core.SelectedFeatureSetProto;
 import org.tribuo.provenance.FeatureSetProvenance;
 
-import java.io.Serializable;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -40,8 +40,7 @@ import java.util.Objects;
  * Uses record style accessors as it may be refactored into a record one day.
  */
 @ProtoSerializableClass(serializedDataClass = SelectedFeatureSetProto.class, version = SelectedFeatureSet.CURRENT_VERSION)
-public final class SelectedFeatureSet implements ProtoSerializable<FeatureSetProto>, Provenancable<FeatureSetProvenance>, Serializable {
-    private static final long serialVersionUID = 1L;
+public final class SelectedFeatureSet implements ProtoSerializable<FeatureSetProto>, Provenancable<FeatureSetProvenance> {
 
     /**
      * Protobuf serialization version.
@@ -79,11 +78,12 @@ public final class SelectedFeatureSet implements ProtoSerializable<FeatureSetPro
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"unchecked","rawtypes"}) // guarded & checked by getClass checks.
-    public static SelectedFeatureSet deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static SelectedFeatureSet deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }

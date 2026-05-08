@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import com.google.protobuf.Any;
 import org.tribuo.Output;
 import org.tribuo.common.tree.protos.SplitNodeProto;
 import org.tribuo.common.tree.protos.TreeNodeProto;
-import org.tribuo.math.la.SparseVector;
+import org.tribuo.math.la.SGDVector;
 
 import java.util.Objects;
 
@@ -28,7 +28,6 @@ import java.util.Objects;
  * An immutable {@link Node} with a split and two child nodes.
  */
 public class SplitNode<T extends Output<T>> implements Node<T> {
-    private static final long serialVersionUID = 3L;
 
     /**
      * Protobuf serialization version.
@@ -69,7 +68,7 @@ public class SplitNode<T extends Output<T>> implements Node<T> {
      * @return The corresponding child node.
      */
     @Override
-    public Node<T> getNextNode(SparseVector e) {
+    public Node<T> getNextNode(SGDVector e) {
         double feature = e.get(splitFeature);
         if (feature > splitValue) {
             return greaterThan;
@@ -204,7 +203,7 @@ public class SplitNode<T extends Output<T>> implements Node<T> {
         }
 
         @Override
-        public Node<T> getNextNode(SparseVector example) {
+        public Node<T> getNextNode(SGDVector example) {
             return null;
         }
 

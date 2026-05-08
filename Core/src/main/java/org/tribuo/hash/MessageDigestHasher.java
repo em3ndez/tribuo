@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,14 +24,13 @@ import com.oracle.labs.mlrg.olcut.provenance.ConfiguredObjectProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.ObjectProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.Provenance;
 import com.oracle.labs.mlrg.olcut.provenance.primitives.StringProvenance;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializableClass;
 import org.tribuo.protos.ProtoSerializableField;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.HasherProto;
 import org.tribuo.protos.core.MessageDigestHasherProto;
 
-import java.io.IOException;
-import java.io.ObjectInputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -51,7 +50,6 @@ import java.util.function.Supplier;
  */
 @ProtoSerializableClass(version = MessageDigestHasher.CURRENT_VERSION, serializedDataClass = MessageDigestHasherProto.class)
 public final class MessageDigestHasher extends Hasher {
-    private static final long serialVersionUID = 3L;
 
     /**
      * Protobuf serialization version.
@@ -69,15 +67,15 @@ public final class MessageDigestHasher extends Hasher {
     @ProtoSerializableField
     private String hashType;
 
-    private transient ThreadLocal<MessageDigest> md;
+    private ThreadLocal<MessageDigest> md;
 
     /**
      * Only used by olcut.
      */
     @Config(mandatory = true,description="Salt used in the hash.",redact=true)
-    private transient String saltStr = null;
+    private String saltStr = null;
 
-    private transient byte[] salt = null;
+    private byte[] salt = null;
 
     private MessageDigestHasherProvenance provenance;
 
@@ -109,10 +107,11 @@ public final class MessageDigestHasher extends Hasher {
      * @param version The serialized object version number.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static MessageDigestHasher deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static MessageDigestHasher deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -171,13 +170,6 @@ public final class MessageDigestHasher extends Hasher {
         } else {
             throw new IllegalArgumentException("Salt: '" + salt + "', does not meet the requirements for a salt.");
         }
-    }
-
-    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        salt = null;
-        saltStr = null;
-        md = ThreadLocal.withInitial(getDigestSupplier(hashType));
     }
 
     @Override

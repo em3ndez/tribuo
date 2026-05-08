@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ import org.tribuo.classification.Label;
 import org.tribuo.impl.ModelDataCarrier;
 import org.tribuo.multilabel.MultiLabel;
 import org.tribuo.multilabel.protos.IndependentMultiLabelModelProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.protos.core.OutputProto;
 import org.tribuo.provenance.ModelProvenance;
@@ -55,7 +56,6 @@ import java.util.Set;
  * the multi-label classification literature.
  */
 public class IndependentMultiLabelModel extends Model<MultiLabel> {
-    private static final long serialVersionUID = 1L;
 
     /**
      * Protobuf serialization version.
@@ -93,16 +93,17 @@ public class IndependentMultiLabelModel extends Model<MultiLabel> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static IndependentMultiLabelModel deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static IndependentMultiLabelModel deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         IndependentMultiLabelModelProto proto = message.unpack(IndependentMultiLabelModelProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(MultiLabel.class)) {
             throw new IllegalStateException("Invalid protobuf, output domain is not a multi-label domain, found " + carrier.outputDomain().getClass());
         }
@@ -126,7 +127,7 @@ public class IndependentMultiLabelModel extends Model<MultiLabel> {
         }
         List<Model<Label>> models = new ArrayList<>(proto.getModelsCount());
         for (ModelProto p : proto.getModelsList()) {
-            Model<?> model = Model.deserialize(p);
+            Model<?> model = Model.deserialize(p, deserCache);
             if (model.validate(Label.class)) {
                 models.add(model.castModel(Label.class));
             } else {
@@ -135,6 +136,22 @@ public class IndependentMultiLabelModel extends Model<MultiLabel> {
         }
 
         return new IndependentMultiLabelModel(carrier.name(),carrier.provenance(),carrier.featureDomain(),outputDomain,labels,models);
+    }
+
+    /**
+     * Returns an unmodifiable view on the binary model members.
+     * @return The binary model members.
+     */
+    public List<Model<Label>> getModels() {
+        return Collections.unmodifiableList(models);
+    }
+
+    /**
+     * Returns the training label order.
+     * @return The training label order.
+     */
+    public List<Label> getLabelOrder() {
+        return Collections.unmodifiableList(labels);
     }
 
     @Override

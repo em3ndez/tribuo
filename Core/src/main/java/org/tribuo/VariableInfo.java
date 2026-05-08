@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +17,16 @@
 package org.tribuo;
 
 import org.tribuo.protos.ProtoSerializable;
+import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.VariableInfoProto;
 
-import java.io.Serializable;
 import java.util.SplittableRandom;
 
 /**
  * A VariableInfo subclass contains information about a feature and
  * its observed values.
  */
-public interface VariableInfo extends Serializable, ProtoSerializable<VariableInfoProto>, Cloneable {
+public interface VariableInfo extends ProtoSerializable<VariableInfoProto>, Cloneable {
     /**
      * The name of this feature.
      * @return The feature name.
@@ -68,4 +68,13 @@ public interface VariableInfo extends Serializable, ProtoSerializable<VariableIn
      * @return A copy.
      */
     public VariableInfo copy();
+
+    /**
+     * Deserializes the variable info from the supplied protobuf.
+     * @param proto The protobuf to deserialize.
+     * @return The variable info.
+     */
+    public static VariableInfo deserialize(VariableInfoProto proto) {
+        return ProtoUtil.deserialize(proto);
+    }
 }

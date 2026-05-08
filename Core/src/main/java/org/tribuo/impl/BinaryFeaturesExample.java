@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,6 +39,7 @@ import org.tribuo.Feature;
 import org.tribuo.FeatureMap;
 import org.tribuo.Output;
 import org.tribuo.VariableInfo;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.BinaryFeaturesExampleProto;
 import org.tribuo.protos.core.ExampleProto;
@@ -63,7 +64,6 @@ import com.oracle.labs.mlrg.olcut.util.SortUtil;
  * @param <T> The output type.
  */
 public final class BinaryFeaturesExample<T extends Output<T>> extends Example<T> {
-    private static final long serialVersionUID = 1L;
 
     private static final Logger logger = Logger.getLogger(BinaryFeaturesExample.class.getName());
 
@@ -239,16 +239,17 @@ public final class BinaryFeaturesExample<T extends Output<T>> extends Example<T>
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"rawtypes","unchecked"})
-    public static BinaryFeaturesExample<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static BinaryFeaturesExample<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         BinaryFeaturesExampleProto proto = message.unpack(BinaryFeaturesExampleProto.class);
-        Output<?> output = ProtoUtil.deserialize(proto.getOutput());
+        Output<?> output = ProtoUtil.deserialize(proto.getOutput(), deserCache);
         return new BinaryFeaturesExample(output,proto.getWeight(),proto.getFeatureNameList(),proto.getMetadataMap());
     }
 

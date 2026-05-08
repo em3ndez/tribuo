@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,12 +28,10 @@ import org.tribuo.common.tree.LeafNode;
 import org.tribuo.common.tree.Node;
 import org.tribuo.common.tree.SplitNode;
 import org.tribuo.common.tree.impl.IntArrayContainer;
-import org.tribuo.math.la.SparseVector;
+import org.tribuo.math.la.SGDVector;
 import org.tribuo.math.la.VectorTuple;
 import org.tribuo.util.Util;
 
-import java.io.IOException;
-import java.io.NotSerializableException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -49,7 +47,6 @@ import java.util.logging.Logger;
  * the current impurity and a bunch of other statistics.
  */
 public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
-    private static final long serialVersionUID = 1L;
 
     private static final Logger logger = Logger.getLogger(ClassifierTrainingNode.class.getName());
 
@@ -73,11 +70,12 @@ public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
      * Constructor which creates the inverted file.
      * @param impurity The impurity function to use.
      * @param examples The training data.
+     * @param featureIDMap The feature id mapping.
+     * @param outputIDInfo The output id mapping.
      * @param leafDeterminer Contains parameters needed to determine whether a child node will be a leaf.
      */
-    public ClassifierTrainingNode(LabelImpurity impurity, Dataset<Label> examples, LeafDeterminer leafDeterminer) {
-        this(impurity,invertData(examples), examples.size(), 0, examples.getFeatureIDMap(),
-                examples.getOutputIDInfo(),leafDeterminer);
+    public ClassifierTrainingNode(LabelImpurity impurity, Dataset<Label> examples, ImmutableFeatureMap featureIDMap, ImmutableOutputInfo<Label> outputIDInfo, LeafDeterminer leafDeterminer) {
+        this(impurity,invertData(examples, featureIDMap, outputIDInfo), examples.size(), 0, featureIDMap, outputIDInfo,leafDeterminer);
     }
 
     private ClassifierTrainingNode(LabelImpurity impurity, ArrayList<TreeFeature> data, int numExamples, int depth,
@@ -157,19 +155,17 @@ public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
                 float[] featureCounts = f.getWeightedLabelCounts();
                 Util.inPlaceAdd(lessThanCounts,featureCounts);
                 Util.inPlaceSubtract(greaterThanCounts,featureCounts);
-                // ImpurityWeighted rescales the impurity by the sum, in order to average properly when you add the
+                // impurityWeighted rescales the impurity by the sum, in order to average properly when you add the
                 // left side & right side together, and then divide by the sum of the counts
                 double lessThanScore = impurity.impurityWeighted(lessThanCounts);
                 double greaterThanScore = impurity.impurityWeighted(greaterThanCounts);
-                if ((lessThanScore > 1e-10) && (greaterThanScore > 1e-10)) {
-                    double score = (lessThanScore + greaterThanScore) / weightSum;
-                    if (score < bestScore) {
-                        bestID = i;
-                        bestScore = score;
-                        System.arraycopy(lessThanCounts,0,lessThanCountsOfBest,0,lessThanCounts.length);
-                        System.arraycopy(greaterThanCounts,0,greaterThanCountsOfBest,0,greaterThanCounts.length);
-                        bestSplitValue = (f.value + feature.get(j + 1).value) / 2.0;
-                    }
+                double score = (lessThanScore + greaterThanScore) / weightSum;
+                if ((score + IMPURITY_EPSILON) < bestScore) {
+                    bestID = i;
+                    bestScore = score;
+                    System.arraycopy(lessThanCounts,0,lessThanCountsOfBest,0,lessThanCounts.length);
+                    System.arraycopy(greaterThanCounts,0,greaterThanCountsOfBest,0,greaterThanCounts.length);
+                    bestSplitValue = (f.value + feature.get(j + 1).value) / 2.0;
                 }
             }
         }
@@ -177,7 +173,7 @@ public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
         List<AbstractTrainingNode<Label>> output;
         double impurityDecrease = weightSum * (getImpurity() - bestScore);
         // If we found a split better than the current impurity.
-        if ((bestID != -1) && (impurityDecrease >= leafDeterminer.getScaledMinImpurityDecrease())) {
+        if ((bestID != -1) && (impurityDecrease >= (leafDeterminer.getScaledMinImpurityDecrease() + IMPURITY_EPSILON))) {
             output = splitAtBest(featureIDs, bestID, bestSplitValue, lessThanCountsOfBest, greaterThanCountsOfBest);
         } else {
             output = Collections.emptyList();
@@ -222,22 +218,20 @@ public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
             }
             double lessThanScore = impurity.impurityWeighted(lessThanCounts);
             double greaterThanScore = impurity.impurityWeighted(greaterThanCounts);
-            if ((lessThanScore > 1e-10) && (greaterThanScore > 1e-10)) {
-                double score = (lessThanScore + greaterThanScore) / weightSum;
-                if (score < bestScore) {
-                    bestID = i;
-                    bestScore = score;
-                    System.arraycopy(lessThanCounts,0,lessThanCountsOfBest,0,lessThanCounts.length);
-                    System.arraycopy(greaterThanCounts,0,greaterThanCountsOfBest,0,greaterThanCounts.length);
-                    bestSplitValue = (feature.get(splitIdx).value + feature.get(splitIdx + 1).value) / 2.0;
-                }
+            double score = (lessThanScore + greaterThanScore) / weightSum;
+            if ((score + IMPURITY_EPSILON) < bestScore) {
+                bestID = i;
+                bestScore = score;
+                System.arraycopy(lessThanCounts,0,lessThanCountsOfBest,0,lessThanCounts.length);
+                System.arraycopy(greaterThanCounts,0,greaterThanCountsOfBest,0,greaterThanCounts.length);
+                bestSplitValue = (feature.get(splitIdx).value + feature.get(splitIdx + 1).value) / 2.0;
             }
         }
 
         List<AbstractTrainingNode<Label>> output;
         double impurityDecrease = weightSum * (getImpurity() - bestScore);
         // If we found a split better than the current impurity.
-        if ((bestID != -1) && (impurityDecrease >= leafDeterminer.getScaledMinImpurityDecrease())) {
+        if ((bestID != -1) && (impurityDecrease >= (leafDeterminer.getScaledMinImpurityDecrease() + IMPURITY_EPSILON))) {
             output = splitAtBest(featureIDs, bestID, bestSplitValue, lessThanCountsOfBest, greaterThanCountsOfBest);
         } else {
             output = Collections.emptyList();
@@ -366,15 +360,14 @@ public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
      * Inverts a training dataset from row major to column major. This partially de-sparsifies the dataset
      * so it's very expensive in terms of memory.
      * @param examples An input dataset.
+     * @param featureInfos The feature id mapping.
+     * @param labelInfo The label id mapping.
      * @return A list of TreeFeatures which contain {@link InvertedFeature}s.
      */
-    private static ArrayList<TreeFeature> invertData(Dataset<Label> examples) {
-        ImmutableFeatureMap featureInfos = examples.getFeatureIDMap();
-        ImmutableOutputInfo<Label> labelInfo = examples.getOutputIDInfo();
+    private static ArrayList<TreeFeature> invertData(Dataset<Label> examples, ImmutableFeatureMap featureInfos, ImmutableOutputInfo<Label> labelInfo) {
         int numLabels = labelInfo.size();
         int numFeatures = featureInfos.size();
         int numExamples = examples.size();
-
         int[] labels = new int[numExamples];
         float[] weights = new float[numExamples];
 
@@ -394,7 +387,7 @@ public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
 
         for (int i = 0; i < examples.size(); i++) {
             Example<Label> e = examples.getExample(i);
-            SparseVector vec = SparseVector.createSparseVector(e,featureInfos,false);
+            SGDVector vec = SGDVector.createFromExample(e, featureInfos, false);
             int lastID = 0;
             for (VectorTuple f : vec) {
                 int curID = f.index;
@@ -406,12 +399,12 @@ public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
                 // These two checks should never occur as SparseVector deals with collisions, and Dataset prevents
                 // repeated features.
                 // They are left in just to make sure.
-                if (lastID > curID) {
-                    logger.severe("Example = " + e.toString());
-                    throw new IllegalStateException("Features aren't ordered. At id " + i + ", lastID = " + lastID + ", curID = " + curID);
-                } else if (lastID-1 == curID) {
-                    logger.severe("Example = " + e.toString());
+                if (lastID-1 == curID) {
+                    logger.severe("Example = " + e);
                     throw new IllegalStateException("Features are repeated. At id " + i + ", lastID = " + lastID + ", curID = " + curID);
+                } else if (lastID > curID) {
+                    logger.severe("Example = " + e);
+                    throw new IllegalStateException("Features aren't ordered. At id " + i + ", lastID = " + lastID + ", curID = " + curID);
                 }
                 lastID = curID + 1;
             }
@@ -427,12 +420,6 @@ public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
 
         data.forEach(TreeFeature::sort);
 
-        /*
-        for (TreeFeature f : data) {
-            logger.info(f.toString());
-        }
-        */
-
         logger.fine("Fixing InvertedFeature sizes");
 
         data.forEach(TreeFeature::fixSize);
@@ -442,8 +429,4 @@ public class ClassifierTrainingNode extends AbstractTrainingNode<Label> {
         return data;
     }
 
-    private void writeObject(java.io.ObjectOutputStream stream)
-            throws IOException {
-        throw new NotSerializableException("ClassifierTrainingNode is a runtime class only, and should not be serialized.");
-    }
 }

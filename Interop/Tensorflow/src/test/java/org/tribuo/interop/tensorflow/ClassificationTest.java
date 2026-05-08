@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.tensorflow.ndarray.FloatNdArray;
 import org.tensorflow.ndarray.IntNdArray;
-import org.tensorflow.proto.framework.GraphDef;
+import org.tensorflow.proto.GraphDef;
 import org.tribuo.Dataset;
 import org.tribuo.Example;
 import org.tribuo.Feature;
@@ -194,7 +194,7 @@ public class ClassificationTest {
         Assertions.assertTrue(eval.averageAUCROC(false) > 0.0);
 
         // Check Tribuo serialization
-        Helpers.testModelSerialization(model, Label.class);
+        Helpers.testModelProtoSerialization(model, Label.class);
 
         // Check saved model bundle export
         Path outputPath = Files.createTempDirectory("tf-classification-test");
@@ -354,7 +354,7 @@ public class ClassificationTest {
         Assertions.assertTrue(eval.accuracy() > 0.0);
 
         // Check Tribuo serialization
-        Helpers.testModelSerialization(model,Label.class);
+        Helpers.testModelProtoSerialization(model,Label.class);
 
         // Check saved model bundle export
         Path outputPath = Files.createTempDirectory("tf-classification-cnn-test");

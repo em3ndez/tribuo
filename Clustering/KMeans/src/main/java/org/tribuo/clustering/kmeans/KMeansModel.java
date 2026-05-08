@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,20 +27,19 @@ import org.tribuo.ImmutableOutputInfo;
 import org.tribuo.Model;
 import org.tribuo.Prediction;
 import org.tribuo.clustering.ClusterID;
-import org.tribuo.clustering.kmeans.KMeansTrainer.Distance;
 import org.tribuo.clustering.kmeans.protos.KMeansModelProto;
 import org.tribuo.impl.ModelDataCarrier;
+import org.tribuo.math.distance.Distance;
 import org.tribuo.math.la.DenseVector;
 import org.tribuo.math.la.SGDVector;
-import org.tribuo.math.la.SparseVector;
 import org.tribuo.math.la.Tensor;
 import org.tribuo.math.la.VectorTuple;
 import org.tribuo.math.protos.TensorProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.ModelProvenance;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -63,7 +62,6 @@ import java.util.Optional;
  * </pre>
  */
 public class KMeansModel extends Model<ClusterID> {
-    private static final long serialVersionUID = 1L;
 
     /**
      * Protobuf serialization version.
@@ -72,15 +70,10 @@ public class KMeansModel extends Model<ClusterID> {
 
     private final DenseVector[] centroidVectors;
 
-    @Deprecated
-    private Distance distanceType;
-
-    // This is not final to support deserialization of older models. It will be final in a future version which doesn't
-    // maintain serialization compatibility with 4.X.
-    private org.tribuo.math.distance.Distance dist;
+    private final Distance dist;
 
     KMeansModel(String name, ModelProvenance description, ImmutableFeatureMap featureIDMap,
-                ImmutableOutputInfo<ClusterID> outputIDInfo, DenseVector[] centroidVectors, org.tribuo.math.distance.Distance dist) {
+                ImmutableOutputInfo<ClusterID> outputIDInfo, DenseVector[] centroidVectors, Distance dist) {
         super(name,description,featureIDMap,outputIDInfo,false);
         this.centroidVectors = centroidVectors;
         this.dist = dist;
@@ -91,16 +84,17 @@ public class KMeansModel extends Model<ClusterID> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static KMeansModel deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static KMeansModel deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         KMeansModelProto proto = message.unpack(KMeansModelProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(ClusterID.class)) {
             throw new IllegalStateException("Invalid protobuf, output domain is not a clustering domain, found " + carrier.outputDomain().getClass());
         }
@@ -127,7 +121,7 @@ public class KMeansModel extends Model<ClusterID> {
             }
         }
 
-        org.tribuo.math.distance.Distance dist = ProtoUtil.deserialize(proto.getDistance());
+        org.tribuo.math.distance.Distance dist = ProtoUtil.deserialize(proto.getDistance(), deserCache);
 
         return new KMeansModel(carrier.name(), carrier.provenance(), featureDomain, outputDomain, centroids, dist);
     }
@@ -181,15 +175,7 @@ public class KMeansModel extends Model<ClusterID> {
 
     @Override
     public Prediction<ClusterID> predict(Example<ClusterID> example) {
-        SGDVector vector;
-        if (example.size() == featureIDMap.size()) {
-            vector = DenseVector.createDenseVector(example, featureIDMap, false);
-        } else {
-            vector = SparseVector.createSparseVector(example, featureIDMap, false);
-        }
-        if (vector.numActiveElements() == 0) {
-            throw new IllegalArgumentException("No features found in Example " + example.toString());
-        }
+        SGDVector vector = SGDVector.createFromExample(example, featureIDMap, false);
         double minDistance = Double.POSITIVE_INFINITY;
         int id = -1;
         for (int i = 0; i < centroidVectors.length; i++) {
@@ -241,10 +227,4 @@ public class KMeansModel extends Model<ClusterID> {
         return new KMeansModel(newName,newProvenance,featureIDMap,outputIDInfo,newCentroids,dist);
     }
 
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        if (dist == null) {
-            dist = distanceType.getDistanceType().getDistance();
-        }
-    }
 }

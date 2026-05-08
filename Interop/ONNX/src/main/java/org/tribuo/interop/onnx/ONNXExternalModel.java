@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,6 +44,7 @@ import org.tribuo.interop.ExternalModel;
 import org.tribuo.interop.ExternalTrainerProvenance;
 import org.tribuo.interop.onnx.protos.ONNXExternalModelProto;
 import org.tribuo.math.la.SparseVector;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.DatasetProvenance;
@@ -73,7 +74,6 @@ import java.util.stream.Collectors;
  * N.B. ONNX support is experimental, and may change without a major version bump.
  */
 public final class ONNXExternalModel<T extends Output<T>> extends ExternalModel<T, OnnxTensor, List<OnnxValue>> implements AutoCloseable {
-    private static final long serialVersionUID = 1L;
 
     private static final Logger logger = Logger.getLogger(ONNXExternalModel.class.getName());
 
@@ -82,11 +82,11 @@ public final class ONNXExternalModel<T extends Output<T>> extends ExternalModel<
      */
     public static final int CURRENT_VERSION = 0;
 
-    private transient OrtEnvironment env;
+    private final OrtEnvironment env;
 
-    private transient OrtSession.SessionOptions options;
+    private OrtSession.SessionOptions options;
 
-    private transient OrtSession session;
+    private OrtSession session;
 
     private final byte[] modelArray;
 
@@ -132,20 +132,21 @@ public final class ONNXExternalModel<T extends Output<T>> extends ExternalModel<
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @throws OrtException If the ONNX model could not be instantiated.
      * @return The deserialized object.
      */
     @SuppressWarnings({"rawtypes","unchecked"}) // guarded by a getClass check
-    public static ONNXExternalModel<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException, OrtException {
+    public static ONNXExternalModel<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException, OrtException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         ONNXExternalModelProto proto = message.unpack(ONNXExternalModelProto.class);
-        OutputTransformer<?> outputTransformer = ProtoUtil.deserialize(proto.getOutputTransformer());
-        ExampleTransformer exampleTransformer = ProtoUtil.deserialize(proto.getExampleTransformer());
+        OutputTransformer<?> outputTransformer = ProtoUtil.deserialize(proto.getOutputTransformer(), deserCache);
+        ExampleTransformer exampleTransformer = ProtoUtil.deserialize(proto.getExampleTransformer(), deserCache);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(outputTransformer.getTypeWitness())) {
             throw new IllegalStateException("Invalid protobuf, output domain does not match converter, found " + carrier.outputDomain().getClass() + " and " + outputTransformer.getTypeWitness());
         }
@@ -180,7 +181,7 @@ public final class ONNXExternalModel<T extends Output<T>> extends ExternalModel<
             options.close();
         }
         options = newOptions;
-        env.createSession(modelArray, newOptions);
+        session = env.createSession(modelArray, newOptions);
     }
 
     @Override
@@ -434,17 +435,6 @@ public final class ONNXExternalModel<T extends Output<T>> extends ExternalModel<
                     featureMapping, modelArray, opts, inputName, featureTransformer, outputTransformer);
         } catch (IOException e) {
             throw new IllegalArgumentException("Unable to load model from path " + path, e);
-        }
-    }
-
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        try {
-            this.env = OrtEnvironment.getEnvironment();
-            this.options = new OrtSession.SessionOptions();
-            this.session = env.createSession(modelArray, options);
-        } catch (OrtException e) {
-            throw new IllegalStateException("Could not construct ONNX Runtime session during deserialization.");
         }
     }
 

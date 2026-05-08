@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import org.tribuo.Output;
 import org.tribuo.math.protos.DenseTensorProto;
 import org.tribuo.math.protos.TensorProto;
 import org.tribuo.math.util.VectorNormalizer;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.util.MeanVarianceAccumulator;
 import org.tribuo.util.Util;
 
@@ -37,6 +38,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.function.DoubleBinaryOperator;
 import java.util.function.DoubleUnaryOperator;
@@ -46,8 +48,7 @@ import java.util.stream.Collectors;
 /**
  * A dense vector, backed by a double array.
  */
-public class DenseVector implements SGDVector {
-    private static final long serialVersionUID = 1L;
+public non-sealed class DenseVector implements SGDVector {
 
     /**
      * Protobuf serialization version.
@@ -59,6 +60,10 @@ public class DenseVector implements SGDVector {
      * The value array.
      */
     protected final double[] elements;
+
+    private final ImmutableFeatureMap featureMap;
+
+    private final Example<?> example;
 
     /**
      * Creates an empty dense vector of the specified size.
@@ -77,6 +82,8 @@ public class DenseVector implements SGDVector {
         this.elements = new double[size];
         Arrays.fill(this.elements,value);
         this.shape = new int[]{size};
+        this.featureMap = null;
+        this.example = null;
     }
 
     /**
@@ -84,8 +91,41 @@ public class DenseVector implements SGDVector {
      * @param values The values of this dense vector.
      */
     protected DenseVector(double[] values) {
+        this(values, null, null);
+    }
+
+    /**
+     * Does not defensively copy the input, used internally.
+     * @param values The values of this dense vector.
+     * @param example The example this vector was created from.
+     * @param featureMap The feature map which supplied the indices.
+     */
+    protected DenseVector(double[] values, Example<?> example, ImmutableFeatureMap featureMap) {
         this.elements = values;
         this.shape = new int[]{elements.length};
+        this.featureMap = featureMap;
+        this.example = example;
+    }
+
+    /**
+     * Unpacks the pre-validated values list into the backing array.
+     * @param values The values of this dense vector.
+     * @param example The example this vector was created from.
+     * @param featureMap The feature map which supplied the indices.
+     * @param addBias Add a bias feature.
+     */
+    DenseVector(List<VectorTuple> values, ImmutableFeatureMap featureMap, Example<?> example, boolean addBias) {
+        int numFeatures = addBias ? featureMap.size() + 1 : featureMap.size();
+        this.shape = new int[]{numFeatures};
+        this.elements = new double[numFeatures];
+        this.featureMap = featureMap;
+        this.example = example;
+        for (var v : values) {
+            this.elements[v.index] = v.value;
+        }
+        if (addBias) {
+            this.elements[numFeatures-1] = 1.0;
+        }
     }
 
     /**
@@ -111,7 +151,7 @@ public class DenseVector implements SGDVector {
      * Used in training and inference.
      * <p>
      * Throws {@link IllegalArgumentException} if the Example contains NaN-valued features or
-     * if no features in this Example are present in the feature map..
+     * if no features in this Example are present in the feature map.
      * <p>
      * Unspecified features are set to zero.
      * @param example     The example to convert.
@@ -141,7 +181,7 @@ public class DenseVector implements SGDVector {
         if (addBias) {
             values[numFeatures-1] = 1.0;
         }
-        return new DenseVector(values);
+        return new DenseVector(values, example, featureInfo);
     }
 
     /**
@@ -149,10 +189,11 @@ public class DenseVector implements SGDVector {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static DenseVector deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static DenseVector deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -174,7 +215,7 @@ public class DenseVector implements SGDVector {
         if (shape[0] < 1) {
             throw new IllegalArgumentException("Invalid proto, shape must be positive, found " + shape[0] + " at position 0");
         }
-        int numElements = Util.product(shape);
+        int numElements = shape[0];
         DoubleBuffer buffer = proto.getValues().asReadOnlyByteBuffer().order(ByteOrder.LITTLE_ENDIAN).asDoubleBuffer();
         if (buffer.remaining() != numElements) {
             throw new IllegalArgumentException("Invalid proto, claimed " + numElements + ", but only had " + buffer.remaining() + " values");
@@ -259,6 +300,33 @@ public class DenseVector implements SGDVector {
         return elements.length;
     }
 
+    @Override
+    public int numNonZeroElements() {
+        int count = 0;
+        for (int i = 0; i < elements.length; i++) {
+            if (get(i) != 0.0) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Gets the index of the maximum element.
+     * @return The index of the maximum element.
+     */
+    public int argmax() {
+        int idx = -1;
+        double value = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < elements.length; i++) {
+            if (value < get(i)) {
+                idx = i;
+                value = get(i);
+            }
+        }
+        return idx;
+    }
+
     /**
      * Performs a reduction from left to right of this vector.
      * <p>
@@ -299,32 +367,47 @@ public class DenseVector implements SGDVector {
 
     /**
      * Equals is defined mathematically, that is two SGDVectors are equal iff they have the same indices
-     * and the same values at those indices.
+     * and the same values at those indices (dense vectors will have indices for zeros, and sparse will not,
+     * but these are ignored).
      * @param other Object to compare against.
      * @return True if this vector and the other vector contain the same values in the same order.
      */
     @Override
     public boolean equals(Object other) {
-        if (other instanceof SGDVector) {
-            SGDVector otherVector = (SGDVector) other;
-            if (elements.length == otherVector.size()) {
-                Iterator<VectorTuple> ourItr = iterator();
-                Iterator<VectorTuple> otherItr = ((SGDVector) other).iterator();
-                VectorTuple ourTuple;
-                VectorTuple otherTuple;
-
-                while (ourItr.hasNext() && otherItr.hasNext()) {
-                    ourTuple = ourItr.next();
-                    otherTuple = otherItr.next();
-                    if (!ourTuple.equals(otherTuple)) {
+        if (other instanceof DenseVector otherDense) {
+            if (otherDense.elements.length != elements.length) {
+                return false;
+            } else {
+                for (int i = 0; i < elements.length; i++) {
+                    if (Math.abs(get(i) - otherDense.get(i)) > VectorTuple.DELTA) {
                         return false;
                     }
                 }
-
-                // If one of the iterators still has elements then they are not the same.
-                return !(ourItr.hasNext() || otherItr.hasNext());
-            } else {
+                return true;
+            }
+        } else if (other instanceof SparseVector otherSparse) {
+            if (otherSparse.size() != elements.length) {
                 return false;
+            } else {
+                // Check our iterator against their dense get
+                int prevIndex = 0;
+                for (var v : otherSparse) {
+                    for (; prevIndex < v.index; prevIndex++) {
+                        if (get(prevIndex) != 0.0) {
+                            return false;
+                        }
+                    }
+                    if (Math.abs(v.value - get(v.index)) > VectorTuple.DELTA) {
+                        return false;
+                    }
+                    prevIndex++;
+                }
+                for (; prevIndex < elements.length; prevIndex++) {
+                    if (get(prevIndex) != 0.0) {
+                        return false;
+                    }
+                }
+                return true;
             }
         } else {
             return false;
@@ -347,8 +430,14 @@ public class DenseVector implements SGDVector {
             throw new IllegalArgumentException("Can't add two vectors of different dimension, this = " + elements.length + ", other = " + other.size());
         }
         double[] newValues = toArray();
-        for (VectorTuple tuple : other) {
-            newValues[tuple.index] += tuple.value;
+        if (other instanceof DenseVector otherDense) {
+            for (int i = 0; i < newValues.length; i++) {
+                newValues[i] += otherDense.get(i);
+            }
+        } else {
+            for (VectorTuple tuple : other) {
+                newValues[tuple.index] += tuple.value;
+            }
         }
         return new DenseVector(newValues);
     }
@@ -364,8 +453,14 @@ public class DenseVector implements SGDVector {
             throw new IllegalArgumentException("Can't subtract two vectors of different dimension, this = " + elements.length + ", other = " + other.size());
         }
         double[] newValues = toArray();
-        for (VectorTuple tuple : other) {
-            newValues[tuple.index] -= tuple.value;
+        if (other instanceof DenseVector otherDense) {
+            for (int i = 0; i < newValues.length; i++) {
+                newValues[i] -= otherDense.get(i);
+            }
+        } else {
+            for (VectorTuple tuple : other) {
+                newValues[tuple.index] -= tuple.value;
+            }
         }
         return new DenseVector(newValues);
     }
@@ -414,6 +509,17 @@ public class DenseVector implements SGDVector {
         } else {
             throw new IllegalArgumentException("Scaling a Vector by a non-Vector");
         }
+    }
+
+    /**
+     * Applies the function {@code f} to each element of this vector returning a new vector.
+     * @param f The function to apply.
+     * @return A copy of this vector with {@code f} applied to each element.
+     */
+    public DenseVector foreach(DoubleUnaryOperator f) {
+        DenseVector output = new DenseVector(this);
+        output.foreachInPlace(f);
+        return output;
     }
 
     @Override
@@ -537,6 +643,14 @@ public class DenseVector implements SGDVector {
     }
 
     /**
+     * Sets all elements of this vector to {@code value}.
+     * @param value The value to set things to.
+     */
+    public void set(double value) {
+        Arrays.fill(elements, value);
+    }
+
+    /**
      * Sets all the elements of this vector to be the same as {@code other}.
      * @param other The {@link DenseVector} to copy.
      */
@@ -607,6 +721,43 @@ public class DenseVector implements SGDVector {
     public void expNormalize(double total) {
         for (int i = 0; i < elements.length; i++) {
             elements[i] = Math.exp(elements[i] - total);
+        }
+    }
+
+    /**
+     * Sums log probabilities.
+     * @return log sum exp input[i].
+     */
+    public double logSumExp() {
+        final double LOG_TOLERANCE = 30.0;
+
+        double maxValue = get(0);
+        int maxIdx = 0;
+        for (int i = 1; i < elements.length; i++) {
+            double value = get(i);
+            if (value > maxValue) {
+                maxValue = value;
+                maxIdx = i;
+            }
+        }
+        if (maxValue == Double.NEGATIVE_INFINITY) {
+            return maxValue;
+        }
+
+        boolean anyAdded = false;
+        double intermediate = 0.0;
+        double cutoff = maxValue - LOG_TOLERANCE;
+        for (int i = 0; i < elements.length; i++) {
+            double value = get(i);
+            if (value >= cutoff && i != maxIdx && !Double.isInfinite(value)) {
+                anyAdded = true;
+                intermediate += Math.exp(value - maxValue);
+            }
+        }
+        if (anyAdded) {
+            return maxValue + Math.log1p(intermediate);
+        } else {
+            return maxValue;
         }
     }
 
@@ -781,6 +932,16 @@ public class DenseVector implements SGDVector {
         }
 
         return acc;
+    }
+
+    @Override
+    public Optional<ImmutableFeatureMap> featureIDMap() {
+        return Optional.ofNullable(featureMap);
+    }
+
+    @Override
+    public Optional<Example<?>> example() {
+        return Optional.ofNullable(example);
     }
 
     private static class DenseVectorIterator implements VectorIterator {

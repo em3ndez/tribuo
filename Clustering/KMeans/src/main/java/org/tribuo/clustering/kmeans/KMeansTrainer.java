@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import org.tribuo.Example;
 import org.tribuo.ImmutableFeatureMap;
 import org.tribuo.ImmutableOutputInfo;
 import org.tribuo.Trainer;
+import org.tribuo.WeightedExamples;
 import org.tribuo.clustering.ClusterID;
 import org.tribuo.clustering.ImmutableClusteringInfo;
 import org.tribuo.math.distance.DistanceType;
@@ -37,8 +38,6 @@ import org.tribuo.provenance.TrainerProvenance;
 import org.tribuo.provenance.impl.TrainerProvenanceImpl;
 import org.tribuo.util.Util;
 
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -50,7 +49,6 @@ import java.util.Map.Entry;
 import java.util.SplittableRandom;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.ForkJoinWorkerThread;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -72,10 +70,6 @@ import java.util.stream.Stream;
  * <p>
  * The train method will instantiate dense examples as dense vectors, speeding up the computation.
  * <p>
- * Note parallel training uses a {@link ForkJoinPool} which requires that the Tribuo codebase
- * is given the "modifyThread" and "modifyThreadGroup" privileges when running under a
- * {@link java.lang.SecurityManager}.
- * <p>
  * See:
  * <pre>
  * J. Friedman, T. Hastie, &amp; R. Tibshirani.
@@ -90,11 +84,8 @@ import java.util.stream.Stream;
  * <a href="https://theory.stanford.edu/~sergei/papers/kMeansPP-soda">PDF</a>
  * </pre>
  */
-public class KMeansTrainer implements Trainer<ClusterID> {
+public class KMeansTrainer implements Trainer<ClusterID>, WeightedExamples {
     private static final Logger logger = Logger.getLogger(KMeansTrainer.class.getName());
-
-    // Thread factory for the FJP, to allow use with OpenSearch's SecureSM
-    private static final CustomForkJoinWorkerThreadFactory THREAD_FACTORY = new CustomForkJoinWorkerThreadFactory();
 
     /**
      * Possible distance functions.
@@ -291,26 +282,15 @@ public class KMeansTrainer implements Trainer<ClusterID> {
         int n = 0;
         for (Example<ClusterID> example : examples) {
             weights[n] = example.getWeight();
-            if (example.size() == featureMap.size()) {
-                data[n] = DenseVector.createDenseVector(example, featureMap, false);
-            } else {
-                data[n] = SparseVector.createSparseVector(example, featureMap, false);
-            }
+            data[n] = SGDVector.createFromExample(example, featureMap, false);
             oldCentre[n] = -1;
             n++;
         }
 
-        DenseVector[] centroidVectors;
-        switch (initialisationType) {
-            case RANDOM:
-                centroidVectors = initialiseRandomCentroids(centroids, featureMap, localRNG);
-                break;
-            case PLUSPLUS:
-                centroidVectors = initialisePlusPlusCentroids(centroids, data, localRNG, dist);
-                break;
-            default:
-                throw new IllegalStateException("Unknown initialisation" + initialisationType);
-        }
+        DenseVector[] centroidVectors = switch (initialisationType) {
+            case RANDOM -> initialiseRandomCentroids(centroids, featureMap, localRNG);
+            case PLUSPLUS -> initialisePlusPlusCentroids(centroids, data, localRNG, dist);
+        };
 
         Map<Integer, List<Integer>> clusterAssignments = new HashMap<>();
         boolean parallel = numThreads > 1;
@@ -345,11 +325,7 @@ public class KMeansTrainer implements Trainer<ClusterID> {
         ForkJoinPool fjp = null;
         try {
             if (parallel) {
-                if (System.getSecurityManager() == null) {
-                    fjp = new ForkJoinPool(numThreads);
-                } else {
-                    fjp = new ForkJoinPool(numThreads, THREAD_FACTORY, null, false);
-                }
+                fjp = new ForkJoinPool(numThreads);
             }
             for (int i = 0; (i < iterations) && !converged; i++) {
                 logger.log(Level.FINE,"Beginning iteration " + i);
@@ -364,9 +340,8 @@ public class KMeansTrainer implements Trainer<ClusterID> {
                 Stream<Integer> intStream = IntStream.range(0, data.length).boxed();
                 Stream<IntAndVector> zipStream = StreamUtil.zip(intStream, vecStream, IntAndVector::new);
                 if (parallel) {
-                    Stream<IntAndVector> parallelZipStream = StreamUtil.boundParallelism(zipStream.parallel());
                     try {
-                        fjp.submit(() -> parallelZipStream.forEach(eStepFunc)).get();
+                        fjp.submit(() -> zipStream.parallel().forEach(eStepFunc)).get();
                     } catch (InterruptedException | ExecutionException e) {
                         throw new RuntimeException("Parallel execution failed", e);
                     }
@@ -550,9 +525,8 @@ public class KMeansTrainer implements Trainer<ClusterID> {
 
         Stream<Entry<Integer, List<Integer>>> mStream = clusterAssignments.entrySet().stream();
         if (fjp != null) {
-            Stream<Entry<Integer, List<Integer>>> parallelMStream = StreamUtil.boundParallelism(mStream.parallel());
             try {
-                fjp.submit(() -> parallelMStream.forEach(mStepFunc)).get();
+                fjp.submit(() -> mStream.parallel().forEach(mStepFunc)).get();
             } catch (InterruptedException | ExecutionException e) {
                 throw new RuntimeException("Parallel execution failed", e);
             }
@@ -572,29 +546,8 @@ public class KMeansTrainer implements Trainer<ClusterID> {
     }
 
     /**
-     * Tuple of index and position. One day it'll be a record, but not today.
+     * Tuple of index and position.
      */
-    static class IntAndVector {
-        final int idx;
-        final SGDVector vector;
+    record IntAndVector(int idx, SGDVector vector) { }
 
-        /**
-         * Constructs an index and vector tuple.
-         * @param idx The index.
-         * @param vector The vector.
-         */
-        public IntAndVector(int idx, SGDVector vector) {
-            this.idx = idx;
-            this.vector = vector;
-        }
-    }
-
-    /**
-     * Used to allow FJPs to work with OpenSearch's SecureSM.
-     */
-    private static final class CustomForkJoinWorkerThreadFactory implements ForkJoinPool.ForkJoinWorkerThreadFactory {
-        public final ForkJoinWorkerThread newThread(ForkJoinPool pool) {
-            return AccessController.doPrivileged((PrivilegedAction<ForkJoinWorkerThread>) () -> new ForkJoinWorkerThread(pool) {});
-        }
-    }
 }

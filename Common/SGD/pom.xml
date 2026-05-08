@@ -21,16 +21,12 @@
     <parent>
         <groupId>org.tribuo</groupId>
         <artifactId>tribuo-common</artifactId>
-        <version>4.3.0-SNAPSHOT</version>
+        <version>5.0.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <name>Common-SGD</name>
     <artifactId>tribuo-common-sgd</artifactId>
     <packaging>jar</packaging>
-    <properties>
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
-    </properties>
     <dependencies>
         <dependency>
             <groupId>${project.groupId}</groupId>

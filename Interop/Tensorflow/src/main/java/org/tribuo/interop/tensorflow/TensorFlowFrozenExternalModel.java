@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.oracle.labs.mlrg.olcut.util.Pair;
-import org.tensorflow.proto.framework.GraphDef;
+import org.tensorflow.proto.GraphDef;
 import org.tribuo.Example;
 import org.tribuo.ImmutableFeatureMap;
 import org.tribuo.ImmutableOutputInfo;
@@ -34,6 +34,7 @@ import org.tribuo.interop.ExternalModel;
 import org.tribuo.interop.ExternalTrainerProvenance;
 import org.tribuo.interop.tensorflow.protos.TensorFlowFrozenExternalModelProto;
 import org.tribuo.math.la.SparseVector;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.DatasetProvenance;
@@ -59,28 +60,22 @@ import java.util.stream.Collectors;
 /**
  * A Tribuo wrapper around a TensorFlow frozen model.
  * <p>
- * The model's serialVersionUID is set to the major Tensorflow version number times 100.
- * <p>
  * N.B. TensorFlow support is experimental and may change without a major version bump.
  */
 public final class TensorFlowFrozenExternalModel<T extends Output<T>> extends ExternalModel<T, TensorMap, Tensor> implements Closeable {
-    private static final long serialVersionUID = 200L;
 
     /**
      * Protobuf serialization version.
      */
     public static final int CURRENT_VERSION = 0;
 
-    private transient Graph model;
+    private final Graph model;
 
-    private transient Session session;
+    private final Session session;
 
     private final FeatureConverter featureConverter;
 
     private final OutputConverter<T> outputConverter;
-
-    @Deprecated // unused as the input name is in the feature converter
-    private final String inputName = "";
 
     private final String outputName;
 
@@ -116,20 +111,21 @@ public final class TensorFlowFrozenExternalModel<T extends Output<T>> extends Ex
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"rawtypes","unchecked"}) // guarded by a getClass check that the output domain and converter are compatible
-    public static TensorFlowFrozenExternalModel<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static TensorFlowFrozenExternalModel<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         TensorFlowFrozenExternalModelProto proto = message.unpack(TensorFlowFrozenExternalModelProto.class);
 
-        OutputConverter<?> outputConverter = ProtoUtil.deserialize(proto.getOutputConverter());
-        FeatureConverter featureConverter = ProtoUtil.deserialize(proto.getFeatureConverter());
+        OutputConverter<?> outputConverter = ProtoUtil.deserialize(proto.getOutputConverter(), deserCache);
+        FeatureConverter featureConverter = ProtoUtil.deserialize(proto.getFeatureConverter(), deserCache);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(outputConverter.getTypeWitness())) {
             throw new IllegalStateException("Invalid protobuf, output domain does not match converter, found " + carrier.outputDomain().getClass() + " and " + outputConverter.getTypeWitness());
         }
@@ -283,20 +279,6 @@ public final class TensorFlowFrozenExternalModel<T extends Output<T>> extends Ex
         } catch (IOException e) {
             throw new IllegalArgumentException("Unable to load model from path " + filename, e);
         }
-    }
-
-    private void writeObject(java.io.ObjectOutputStream out) throws IOException {
-        out.defaultWriteObject();
-        GraphDef modelBytes = model.toGraphDef();
-        out.writeObject(modelBytes.toByteArray());
-    }
-
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        byte[] modelBytes = (byte[]) in.readObject();
-        model = new Graph();
-        model.importGraphDef(GraphDef.parseFrom(modelBytes));
-        session = new Session(model);
     }
 
 }

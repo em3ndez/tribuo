@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,9 @@ package org.tribuo.regression.sgd.linear;
 
 import ai.onnxruntime.OrtException;
 import com.oracle.labs.mlrg.olcut.util.Pair;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.tribuo.Dataset;
 import org.tribuo.Model;
+import org.tribuo.Prediction;
 import org.tribuo.common.sgd.AbstractLinearSGDModel;
 import org.tribuo.common.sgd.AbstractLinearSGDTrainer;
 import org.tribuo.common.sgd.AbstractSGDTrainer;
@@ -30,6 +29,7 @@ import org.tribuo.math.la.DenseMatrix;
 import org.tribuo.math.la.DenseVector;
 import org.tribuo.math.la.Tensor;
 import org.tribuo.math.optimisers.AdaGrad;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.regression.Regressor;
 import org.tribuo.regression.evaluation.RegressionEvaluation;
 import org.tribuo.regression.evaluation.RegressionEvaluator;
@@ -41,10 +41,11 @@ import org.junit.jupiter.api.Test;
 import org.tribuo.test.Helpers;
 
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.net.URL;
+import java.io.InputStream;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
@@ -52,7 +53,7 @@ import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestSGDLinear {
     private static final Logger logger = Logger.getLogger(TestSGDLinear.class.getName());
@@ -60,8 +61,6 @@ public class TestSGDLinear {
     private static final LinearSGDTrainer t = new LinearSGDTrainer(new SquaredLoss(), new AdaGrad(1.0,0.1),10,1000, 1L);
 
     private static final RegressionEvaluator e = new RegressionEvaluator();
-
-    private static final URL TEST_REGRESSION_REORDER_MODEL = TestSGDLinear.class.getResource("linear-4.1.0.model");
 
     @BeforeAll
     public static void setup() {
@@ -102,7 +101,6 @@ public class TestSGDLinear {
     public void testDenseData() {
         Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
         Model<Regressor> model = testSGDLinear(p);
-        Helpers.testModelSerialization(model,Regressor.class);
         Helpers.testModelProtoSerialization(model, Regressor.class, p.getB());
     }
 
@@ -225,28 +223,6 @@ public class TestSGDLinear {
         });
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"regressor-linear-sgd-4.0.2.model"})
-    public void testSerializedModel(String resourceName) throws IOException, ClassNotFoundException {
-        try (ObjectInputStream ois = new ObjectInputStream(TestSGDLinear.class.getResource(resourceName).openStream())) {
-            Model<?> model = (Model<?>) ois.readObject();
-            if (model.validate(Regressor.class)) {
-                @SuppressWarnings("unchecked") // Guarded by validate call.
-                Model<Regressor> m = (Model<Regressor>) model;
-                RegressionEvaluator e = new RegressionEvaluator();
-                RegressionEvaluation evaluation = e.evaluate(m,RegressionDataGenerator.denseTrainTest().getB());
-                Map<String, List<Pair<String,Double>>> features = m.getTopFeatures(3);
-                Assertions.assertNotNull(features);
-                Assertions.assertFalse(features.isEmpty());
-                features = m.getTopFeatures(-1);
-                Assertions.assertNotNull(features);
-                Assertions.assertFalse(features.isEmpty());
-            } else {
-                fail("Invalid model type found, expected Label");
-            }
-        }
-    }
-
     @Test
     public void testThreeDenseData() {
         LinearSGDTrainer freshTrainer = new LinearSGDTrainer(new SquaredLoss(), new AdaGrad(1.0,0.1),10,1000, 1L);
@@ -276,21 +252,36 @@ public class TestSGDLinear {
     }
 
     @Test
-    public void testRegressionReordering() throws IOException, ClassNotFoundException {
-        try (ObjectInputStream ois = new ObjectInputStream(TEST_REGRESSION_REORDER_MODEL.openStream())) {
+    public void loadProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(TestSGDLinear.class.getResource("lin-reg-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
             @SuppressWarnings("unchecked")
-            Model<Regressor> serializedModel = (Model<Regressor>) ois.readObject();
-            Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.threeDimDenseTrainTest(1.0, false);
-            RegressionEvaluation llEval = e.evaluate(serializedModel,p.getB());
-            double expectedDim1 = 0.5008176578612609;
-            double expectedDim2 = 0.5008176578612609;
-            double expectedDim3 = 0.3273674684274661;
-            double expectedAve = 0.44300092804999597;
+            Model<Regressor> deserModel = (Model<Regressor>) Model.deserialize(proto);
 
-            assertEquals(expectedDim1,llEval.r2(new Regressor(RegressionDataGenerator.firstDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedDim2,llEval.r2(new Regressor(RegressionDataGenerator.secondDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedDim3,llEval.r2(new Regressor(RegressionDataGenerator.thirdDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedAve,llEval.averageR2(),1e-6);
+            assertEquals("4.3.1", deserModel.getProvenance().getTribuoVersion());
+
+            Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
+
+            List<Prediction<Regressor>> deserOutput = deserModel.predict(p.getB());
+
+            LinearSGDTrainer trainer = new LinearSGDTrainer(new SquaredLoss(), new AdaGrad(1.0,0.1),10,1000, 1L);
+            Model<Regressor> model = trainer.train(p.getA());
+            List<Prediction<Regressor>> output = model.predict(p.getB());
+
+            assertEquals(deserOutput.size(), p.getB().size());
+            assertTrue(Helpers.predictionListDistributionEquals(deserOutput, output, 1e-7));
         }
+    }
+
+    /**
+     * Test protobuf generation method.
+     * @throws IOException If the write failed.
+     */
+    public void generateModel() throws IOException {
+        Pair<Dataset<Regressor>, Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
+        LinearSGDTrainer trainer = new LinearSGDTrainer(new SquaredLoss(), new AdaGrad(1.0,0.1),10,1000, 1L);
+        Model<Regressor> model = trainer.train(p.getA());
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","regression","sgd","linear","lin-reg-431.tribuo"));
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,18 +17,18 @@
 package org.tribuo.math.util;
 
 import org.tribuo.math.protos.NormalizerProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializable;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.util.onnx.ONNXContext;
 import org.tribuo.util.onnx.ONNXNode;
 
-import java.io.Serializable;
 import java.util.logging.Logger;
 
 /**
  * A functional interface that generates a normalized version of a double array.
  */
-public interface VectorNormalizer extends ProtoSerializable<NormalizerProto>, Serializable {
+public interface VectorNormalizer extends ProtoSerializable<NormalizerProto> {
 
     /**
      * Normalizes the input array in some fashion specified by the class.
@@ -73,6 +73,16 @@ public interface VectorNormalizer extends ProtoSerializable<NormalizerProto>, Se
      * @return The normalizer.
      */
     public static VectorNormalizer deserialize(NormalizerProto proto) {
-        return ProtoUtil.deserialize(proto);
+        return deserialize(proto, new ProtoDeserializationCache());
+    }
+
+    /**
+     * Deserializes the vector normalizer from the supplied protobuf.
+     * @param proto The protobuf to deserialize.
+     * @param deserCache The deserialization cache.
+     * @return The normalizer.
+     */
+    public static VectorNormalizer deserialize(NormalizerProto proto, ProtoDeserializationCache deserCache) {
+        return ProtoUtil.deserialize(proto, deserCache);
     }
 }

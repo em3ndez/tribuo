@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,8 @@ import org.tribuo.common.tree.SplitNode;
 import org.tribuo.common.tree.TreeModel;
 import org.tribuo.common.tree.protos.TreeNodeProto;
 import org.tribuo.impl.ModelDataCarrier;
-import org.tribuo.math.la.SparseVector;
+import org.tribuo.math.la.SGDVector;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.ModelProvenance;
 import org.tribuo.regression.Regressor;
@@ -58,7 +59,6 @@ import java.util.Set;
  * to generate independent predictions for each dimension in a regression.
  */
 public final class IndependentRegressionTreeModel extends TreeModel<Regressor> {
-    private static final long serialVersionUID = 1L;
 
     /**
      * Protobuf serialization version.
@@ -79,17 +79,18 @@ public final class IndependentRegressionTreeModel extends TreeModel<Regressor> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"unchecked","rawtypes"}) // guarded by getClass to ensure all the output types are the same.
-    public static IndependentRegressionTreeModel deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static IndependentRegressionTreeModel deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         IndependentRegressionTreeModelProto proto = message.unpack(IndependentRegressionTreeModelProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(Regressor.class)) {
             throw new IllegalStateException("Invalid protobuf, output domain is not a regression domain, found " + carrier.outputDomain().getClass());
         }
@@ -106,7 +107,7 @@ public final class IndependentRegressionTreeModel extends TreeModel<Regressor> {
 
         for (Map.Entry<String, TreeNodeListProto> e : proto.getNodesMap().entrySet()) {
             List<TreeNodeProto> nodeProtos = e.getValue().getNodesList();
-            if (nodeProtos.size() == 0) {
+            if (nodeProtos.isEmpty()) {
                 throw new IllegalStateException("Invalid protobuf, tree must contain nodes");
             }
             List<Node<Regressor>> nodes = deserializeFromProtos(nodeProtos, Regressor.class);
@@ -160,9 +161,22 @@ public final class IndependentRegressionTreeModel extends TreeModel<Regressor> {
     public Prediction<Regressor> predict(Example<Regressor> example) {
         //
         // Ensures we handle collisions correctly
-        SparseVector vec = SparseVector.createSparseVector(example,featureIDMap,false);
-        if (vec.numActiveElements() == 0) {
+        SGDVector vec = SGDVector.createFromExample(example, featureIDMap, false);
+        return predict(vec, example);
+    }
+
+    /**
+     * Makes a prediction using a pre-computed vector.
+     * See {@link TreeModel#predict(SGDVector, Example)} for details.
+     */
+    public Prediction<Regressor> predict(SGDVector vec, Example<Regressor> example) {
+        if (vec.numNonZeroElements() == 0) {
             throw new IllegalArgumentException("No features found in Example " + example.toString());
+        }
+        if (vec.size() != featureIDMap.size()) {
+            throw new IllegalArgumentException("Vector size (" + vec.size() +
+                ") does not match feature map size (" + featureIDMap.size() +
+                "). The vector must be created from the same feature map as this model.");
         }
 
         List<Prediction<Regressor>> predictionList = new ArrayList<>();
@@ -177,7 +191,7 @@ public final class IndependentRegressionTreeModel extends TreeModel<Regressor> {
 
             //
             // oldNode must be a LeafNode.
-            predictionList.add(((LeafNode<Regressor>) oldNode).getPrediction(vec.numActiveElements(), example));
+            predictionList.add(((LeafNode<Regressor>) oldNode).getPrediction(vec.numNonZeroElements(), example));
         }
         return combine(predictionList);
     }
@@ -220,7 +234,7 @@ public final class IndependentRegressionTreeModel extends TreeModel<Regressor> {
                 }
             }
             List<Pair<String, Double>> list = new ArrayList<>();
-            while (q.size() > 0) {
+            while (!q.isEmpty()) {
                 list.add(q.poll());
             }
             Collections.reverse(list);
@@ -233,8 +247,8 @@ public final class IndependentRegressionTreeModel extends TreeModel<Regressor> {
 
     @Override
     public Optional<Excuse<Regressor>> getExcuse(Example<Regressor> example) {
-        SparseVector vec = SparseVector.createSparseVector(example, featureIDMap, false);
-        if (vec.numActiveElements() == 0) {
+        SGDVector vec = SGDVector.createFromExample(example, featureIDMap, false);
+        if (vec.numNonZeroElements() == 0) {
             return Optional.empty();
         }
 
@@ -261,7 +275,7 @@ public final class IndependentRegressionTreeModel extends TreeModel<Regressor> {
 
             //
             // oldNode must be a LeafNode.
-            predList.add(((LeafNode<Regressor>) oldNode).getPrediction(vec.numActiveElements(), example));
+            predList.add(((LeafNode<Regressor>) oldNode).getPrediction(vec.numNonZeroElements(), example));
 
             List<Pair<String, Double>> pairs = new ArrayList<>();
             int i = list.size() + 1;

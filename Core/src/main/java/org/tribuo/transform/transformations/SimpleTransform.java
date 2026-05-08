@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import com.oracle.labs.mlrg.olcut.provenance.ObjectProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.Provenance;
 import com.oracle.labs.mlrg.olcut.provenance.primitives.DoubleProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.primitives.EnumProvenance;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializableClass;
 import org.tribuo.protos.ProtoSerializableField;
 import org.tribuo.protos.ProtoUtil;
@@ -33,7 +34,6 @@ import org.tribuo.transform.Transformation;
 import org.tribuo.transform.TransformationProvenance;
 import org.tribuo.transform.Transformer;
 
-import java.io.Serializable;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -52,7 +52,6 @@ import java.util.function.DoubleUnaryOperator;
  */
 @ProtoSerializableClass(version = SimpleTransform.CURRENT_VERSION, serializedDataClass = SimpleTransformProto.class)
 public final class SimpleTransform implements Transformer, Transformation, TransformStatistics {
-    private static final long serialVersionUID = 1L;
 
     /**
      * Protobuf serialization version.
@@ -118,7 +117,7 @@ public final class SimpleTransform implements Transformer, Transformation, Trans
     @Config(description="Second operand (if required).")
     private double secondOperand = Double.NaN;
 
-    private SerializableDoubleUnaryOperator operation;
+    private DoubleUnaryOperator operation;
 
     private transient TransformationProvenance provenance;
 
@@ -202,10 +201,11 @@ public final class SimpleTransform implements Transformer, Transformation, Trans
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the message is not a {@link SimpleTransformProto}.
      * @return The deserialized object.
      */
-    static SimpleTransform deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    static SimpleTransform deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         SimpleTransformProto proto = message.unpack(SimpleTransformProto.class);
         if (version == CURRENT_VERSION) {
             return new SimpleTransform(Operation.valueOf(proto.getOp()), proto.getFirstOperand(), proto.getSecondOperand());
@@ -447,8 +447,4 @@ public final class SimpleTransform implements Transformer, Transformation, Trans
         return new SimpleTransform(Operation.threshold,min,max);
     }
 
-    /**
-     * Tag interface to make the operators serializable.
-     */
-    interface SerializableDoubleUnaryOperator extends DoubleUnaryOperator, Serializable {}
 }

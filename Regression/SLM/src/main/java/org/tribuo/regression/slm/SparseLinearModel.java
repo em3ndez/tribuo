@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,13 +30,13 @@ import org.tribuo.Prediction;
 import org.tribuo.VariableInfo;
 import org.tribuo.impl.ModelDataCarrier;
 import org.tribuo.math.la.DenseVector;
+import org.tribuo.math.la.SGDVector;
 import org.tribuo.math.la.SparseVector;
 import org.tribuo.math.la.Tensor;
 import org.tribuo.math.la.VectorTuple;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.ModelProvenance;
-import org.tribuo.provenance.TrainerProvenance;
-import org.tribuo.regression.ImmutableRegressionInfo;
 import org.tribuo.regression.Regressor;
 import org.tribuo.regression.Regressor.DimensionTuple;
 import org.tribuo.regression.impl.SkeletalIndependentRegressionSparseModel;
@@ -49,7 +49,6 @@ import org.tribuo.util.onnx.ONNXPlaceholder;
 import org.tribuo.util.onnx.ONNXRef;
 import org.tribuo.util.onnx.ONNXInitializer;
 
-import java.io.IOException;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -69,7 +68,6 @@ import java.util.stream.Collectors;
  * The type of the model depends on the trainer used.
  */
 public class SparseLinearModel extends SkeletalIndependentRegressionSparseModel implements ONNXExportable {
-    private static final long serialVersionUID = 3L;
     private static final Logger logger = Logger.getLogger(SparseLinearModel.class.getName());
 
     /**
@@ -77,21 +75,18 @@ public class SparseLinearModel extends SkeletalIndependentRegressionSparseModel 
      */
     public static final int CURRENT_VERSION = 0;
 
-    private SparseVector[] weights;
+    private final SparseVector[] weights;
     private final DenseVector featureMeans;
     /**
      * Note this variable is called a variance, but it actually stores the l2 norm of the centered feature column.
      */
     private final DenseVector featureVariance;
     private final boolean bias;
-    private double[] yMean;
+    private final double[] yMean;
     /**
      * Note this variable is called a variance, but it actually stores the l2 norm of the centered output.
      */
-    private double[] yVariance;
-
-    // Used to signal if the model has been rewritten to fix the issue with ElasticNet models in 4.0 and 4.1.0.
-    private boolean enet41MappingFix;
+    private final double[] yVariance;
 
     SparseLinearModel(String name, String[] dimensionNames, ModelProvenance description,
                       ImmutableFeatureMap featureIDMap, ImmutableOutputInfo<Regressor> labelIDMap,
@@ -103,7 +98,6 @@ public class SparseLinearModel extends SkeletalIndependentRegressionSparseModel 
         this.bias = bias;
         this.yVariance = yNorms;
         this.yMean = yMean;
-        this.enet41MappingFix = true;
     }
 
     /**
@@ -111,16 +105,17 @@ public class SparseLinearModel extends SkeletalIndependentRegressionSparseModel 
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static SparseLinearModel deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static SparseLinearModel deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         SparseLinearModelProto proto = message.unpack(SparseLinearModelProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(Regressor.class)) {
             throw new IllegalStateException("Invalid protobuf, output domain is not a regression domain, found " + carrier.outputDomain().getClass());
         }
@@ -142,8 +137,7 @@ public class SparseLinearModel extends SkeletalIndependentRegressionSparseModel 
         int featureSize = proto.getBias() ? carrier.featureDomain().size() + 1 : carrier.featureDomain().size();
         for (int i = 0; i < weights.length; i++) {
             Tensor deser = Tensor.deserialize(proto.getWeights(i));
-            if (deser instanceof SparseVector) {
-                SparseVector v = (SparseVector) deser;
+            if (deser instanceof SparseVector v) {
                 if (v.size() == featureSize) {
                     weights[i] = v;
                 } else {
@@ -183,7 +177,7 @@ public class SparseLinearModel extends SkeletalIndependentRegressionSparseModel 
                 weights, featureMeans, featureNorms, yMean, yNorm, proto.getBias());
     }
 
-    private static Map<String, List<String>> generateActiveFeatures(String[] dimensionNames, ImmutableFeatureMap featureMap, SparseVector[] weightsArray) {
+    private static Map<String, List<String>> generateActiveFeatures(String[] dimensionNames, ImmutableFeatureMap featureMap, SGDVector[] weightsArray) {
         Map<String, List<String>> map = new HashMap<>();
 
         for (int i = 0; i < dimensionNames.length; i++) {
@@ -209,16 +203,16 @@ public class SparseLinearModel extends SkeletalIndependentRegressionSparseModel 
      * @return The feature vector.
      */
     @Override
-    protected SparseVector createFeatures(Example<Regressor> example) {
-        SparseVector features = SparseVector.createSparseVector(example, featureIDMap, bias);
+    protected SGDVector createFeatures(Example<Regressor> example) {
+        SGDVector features = SGDVector.createFromExample(example, featureIDMap, bias);
         features.intersectAndAddInPlace(featureMeans, (a) -> -a);
         features.hadamardProductInPlace(featureVariance, (a) -> 1.0 / a);
         return features;
     }
 
     @Override
-    protected DimensionTuple scoreDimension(int dimensionIdx, SparseVector features) {
-        double prediction = weights[dimensionIdx].numActiveElements() > 0 ? weights[dimensionIdx].dot(features) : 1.0;
+    protected DimensionTuple scoreDimension(int dimensionIdx, SGDVector features) {
+        double prediction = weights[dimensionIdx].numNonZeroElements() > 0 ? weights[dimensionIdx].dot(features) : 1.0;
         prediction *= yVariance[dimensionIdx];
         prediction += yMean[dimensionIdx];
         return new DimensionTuple(dimensions[dimensionIdx], prediction);
@@ -267,7 +261,7 @@ public class SparseLinearModel extends SkeletalIndependentRegressionSparseModel 
         Prediction<Regressor> prediction = predict(example);
         Map<String, List<Pair<String, Double>>> weightMap = new HashMap<>();
 
-        SparseVector features = createFeatures(example);
+        SGDVector features = createFeatures(example);
         for (int i = 0; i < dimensions.length; i++) {
             List<Pair<String, Double>> classScores = new ArrayList<>();
             for (VectorTuple f : features) {
@@ -390,30 +384,4 @@ public class SparseLinearModel extends SkeletalIndependentRegressionSparseModel 
                 .apply(ONNXOperators.ADD, outputMean);
     }
 
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-
-        // Rearrange the dimensions in ElasticNet models from 4.1.0 and earlier because they are corrupted.
-        String tribuoVersion = (String) provenance.getTrainerProvenance().getInstanceValues().get(TrainerProvenance.TRIBUO_VERSION_STRING).getValue();
-        if (provenance.getTrainerProvenance().getClassName().equals("org.tribuo.regression.slm.ElasticNetCDTrainer") && !enet41MappingFix &&
-                (tribuoVersion.startsWith("4.0.0") || tribuoVersion.startsWith("4.0.1") || tribuoVersion.startsWith("4.0.2") || tribuoVersion.startsWith("4.1.0")
-                        // This is explicit to catch the test model which has a 4.1.1-SNAPSHOT Tribuo version.
-                        || tribuoVersion.equals("4.1.1-SNAPSHOT"))) {
-            enet41MappingFix = true;
-            int[] mapping = ((ImmutableRegressionInfo) outputIDInfo).getIDtoNaturalOrderMapping();
-            SparseVector[] newWeights = new SparseVector[weights.length];
-            double[] newYMeans = new double[weights.length];
-            double[] newYVariances = new double[weights.length];
-
-            for (int i = 0; i < mapping.length; i++) {
-                newWeights[i] = this.weights[mapping[i]];
-                newYMeans[i] = this.yMean[mapping[i]];
-                newYVariances[i] = this.yVariance[mapping[i]];
-            }
-
-            this.yMean = newYMeans;
-            this.yVariance = newYVariances;
-            this.weights = newWeights;
-        }
-    }
 }

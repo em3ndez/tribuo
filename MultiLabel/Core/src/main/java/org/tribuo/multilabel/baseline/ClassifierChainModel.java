@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ import org.tribuo.classification.Label;
 import org.tribuo.impl.ModelDataCarrier;
 import org.tribuo.multilabel.MultiLabel;
 import org.tribuo.multilabel.protos.ClassifierChainModelProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.protos.core.OutputProto;
 import org.tribuo.provenance.ModelProvenance;
@@ -71,7 +72,6 @@ import static org.tribuo.multilabel.baseline.ClassifierChainTrainer.CC_SEPARATOR
  * </pre>
  */
 public final class ClassifierChainModel extends Model<MultiLabel> {
-    private static final long serialVersionUID = 1L;
 
     /**
      * Protobuf serialization version.
@@ -108,16 +108,17 @@ public final class ClassifierChainModel extends Model<MultiLabel> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static ClassifierChainModel deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ClassifierChainModel deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         ClassifierChainModelProto proto = message.unpack(ClassifierChainModelProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(MultiLabel.class)) {
             throw new IllegalStateException("Invalid protobuf, output domain is not a multi-label domain, found " + carrier.outputDomain().getClass());
         }
@@ -141,7 +142,7 @@ public final class ClassifierChainModel extends Model<MultiLabel> {
         }
         List<Model<Label>> models = new ArrayList<>(proto.getModelsCount());
         for (ModelProto p : proto.getModelsList()) {
-            Model<?> model = Model.deserialize(p);
+            Model<?> model = Model.deserialize(p, deserCache);
             if (model.validate(Label.class)) {
                 models.add(model.castModel(Label.class));
             } else {
@@ -150,6 +151,14 @@ public final class ClassifierChainModel extends Model<MultiLabel> {
         }
 
         return new ClassifierChainModel(carrier.name(),carrier.provenance(),carrier.featureDomain(),outputDomain,labelOrder,models);
+    }
+
+    /**
+     * Returns an unmodifiable view on the chain members.
+     * @return The chain members.
+     */
+    public List<Model<Label>> getModels() {
+        return models;
     }
 
     @Override

@@ -19,13 +19,21 @@ package org.tribuo.multilabel.baseline;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.tribuo.Dataset;
+import org.tribuo.Model;
 import org.tribuo.Prediction;
 import org.tribuo.classification.baseline.DummyClassifierTrainer;
 import org.tribuo.multilabel.MultiLabel;
 import org.tribuo.multilabel.MultiLabelFactory;
 import org.tribuo.multilabel.example.MultiLabelDataGenerator;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.test.Helpers;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Level;
@@ -94,7 +102,7 @@ public class ClassifierChainTest {
         assertEquals(trueLabel, first.getOutput(), "Predicted labels not equal");
         assertEquals(3,model.getLabelOrder().size());
 
-        Helpers.testModelSerialization(model,MultiLabel.class);
+        Helpers.testModelProtoSerialization(model,MultiLabel.class);
 
         // Test ordered chain
         List<String> labelOrder = Arrays.asList("PUZZLE","MONKEY","TREE");
@@ -109,8 +117,34 @@ public class ClassifierChainTest {
         assertEquals(labelOrder.get(2),model.getLabelOrder().get(2).getLabel());
         assertEquals(3,model.getLabelOrder().size());
 
-        Helpers.testModelSerialization(model,MultiLabel.class);
         Helpers.testModelProtoSerialization(model, MultiLabel.class, test);
     }
 
+    @Test
+    public void loadProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(ClassifierChainTest.class.getResource("cc-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
+            ClassifierChainModel model = (ClassifierChainModel) Model.deserialize(proto);
+
+            assertEquals("4.3.1", model.getProvenance().getTribuoVersion());
+
+            MultiLabelFactory factory = new MultiLabelFactory();
+            Dataset<MultiLabel> test = MultiLabelDataGenerator.generateTestData();
+            List<Prediction<MultiLabel>> predictions = model.predict(test);
+            Prediction<MultiLabel> first = predictions.get(0);
+            MultiLabel trueLabel = factory.generateOutput("MONKEY,PUZZLE,TREE");
+            assertEquals(trueLabel, first.getOutput(), "Predicted labels not equal");
+        }
+    }
+
+    public void generateProtobuf() throws IOException {
+        Dataset<MultiLabel> train = MultiLabelDataGenerator.generateTrainData();
+
+        List<String> labelOrder = Arrays.asList("PUZZLE","MONKEY","TREE");
+        ClassifierChainTrainer trainer = new ClassifierChainTrainer(DummyClassifierTrainer.createMostFrequentTrainer(), labelOrder);
+        Model<MultiLabel> model = trainer.train(train);
+
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","multilabel","baseline","cc-431.tribuo"));
+    }
 }

@@ -23,6 +23,7 @@ import org.tribuo.ImmutableOutputInfo;
 import org.tribuo.Output;
 import org.tribuo.Prediction;
 import org.tribuo.impl.ModelDataCarrier;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializable;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.SequenceModelProto;
@@ -33,7 +34,6 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -46,8 +46,7 @@ import java.util.stream.Collectors;
  * A prediction model, which is used to predict outputs for unseen instances.
  * @param <T> the type of the outputs used to train the model.
  */
-public abstract class SequenceModel<T extends Output<T>> implements ProtoSerializable<SequenceModelProto>, Provenancable<ModelProvenance>, Serializable {
-    private static final long serialVersionUID = 1L;
+public abstract class SequenceModel<T extends Output<T>> implements ProtoSerializable<SequenceModelProto>, Provenancable<ModelProvenance> {
 
     /**
      * The model name.
@@ -188,11 +187,6 @@ public abstract class SequenceModel<T extends Output<T>> implements ProtoSeriali
         return predictions;
     }
 
-    @Override
-    public SequenceModelProto serialize() {
-        throw new UnsupportedOperationException("The default implementation of SequenceModel.serialize() must be overridden to support protobuf serialization.");
-    }
-
     /**
      * Serializes this model to a {@link SequenceModelProto} and writes it to the supplied path.
      * @param path The path to write to.
@@ -222,7 +216,17 @@ public abstract class SequenceModel<T extends Output<T>> implements ProtoSeriali
      * @return The model.
      */
     public static SequenceModel<?> deserialize(SequenceModelProto proto) {
-        return ProtoUtil.deserialize(proto);
+        return deserialize(proto, new ProtoDeserializationCache());
+    }
+
+    /**
+     * Deserializes the model from the supplied protobuf.
+     * @param proto The protobuf to deserialize.
+     * @param deserCache The deserialization cache to use.
+     * @return The model.
+     */
+    public static SequenceModel<?> deserialize(SequenceModelProto proto, ProtoDeserializationCache deserCache) {
+        return ProtoUtil.deserialize(proto, deserCache);
     }
 
     /**

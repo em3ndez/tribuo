@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import org.tribuo.ImmutableFeatureMap;
 import org.tribuo.ImmutableOutputInfo;
 import org.tribuo.Output;
 import org.tribuo.OutputInfo;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ExampleProto;
 import org.tribuo.protos.core.IndexedArrayExampleProto;
@@ -53,7 +54,6 @@ import java.util.logging.Logger;
  * Other outputs may return -1 from {@link #getOutputID()}.
  */
 public class IndexedArrayExample<T extends Output<T>> extends ArrayExample<T> {
-    private static final long serialVersionUID = 1L;
 
     private static final Logger logger = Logger.getLogger(IndexedArrayExample.class.getName());
 
@@ -158,11 +158,12 @@ public class IndexedArrayExample<T extends Output<T>> extends ArrayExample<T> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"unchecked","rawtypes"}) // guarded by getClass checks.
-    public static ArrayExample<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ArrayExample<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -170,15 +171,15 @@ public class IndexedArrayExample<T extends Output<T>> extends ArrayExample<T> {
         if ((proto.getFeatureNameCount() != proto.getFeatureValueCount()) || (proto.getFeatureNameCount() != proto.getFeatureIdxCount())) {
             throw new IllegalStateException("Invalid protobuf, different numbers of feature names, ids and values, found " + proto.getFeatureNameCount() + " names, " + proto.getFeatureIdxCount() + " ids, and " + proto.getFeatureValueCount() + " values.");
         }
-        Output<?> output = ProtoUtil.deserialize(proto.getOutput());
+        Output<?> output = ProtoUtil.deserialize(proto.getOutput(), deserCache);
         int outputID = proto.getOutputIdx();
 
-        FeatureMap fmap = ProtoUtil.deserialize(proto.getFeatureDomain());
+        FeatureMap fmap = FeatureMap.deserialize(proto.getFeatureDomain(), deserCache);
         if (!(fmap instanceof ImmutableFeatureMap)) {
             throw new IllegalStateException("Invalid protobuf, feature domain was not ImmutableFeatureMap, found " + fmap.getClass());
         }
         ImmutableFeatureMap featureDomain = (ImmutableFeatureMap) fmap;
-        OutputInfo<?> outputMap = ProtoUtil.deserialize(proto.getOutputDomain());
+        OutputInfo<?> outputMap = OutputInfo.deserialize(proto.getOutputDomain(), deserCache);
         if (!(outputMap instanceof ImmutableOutputInfo)) {
             throw new IllegalStateException("Invalid protobuf, output domain was not ImmutableOutputInfo, found " + outputMap.getClass());
         }
@@ -364,11 +365,16 @@ public class IndexedArrayExample<T extends Output<T>> extends ArrayExample<T> {
         return new IndexedArrayExample<>(this);
     }
 
+    /**
+     * Unlike {@link ArrayExample#densify(List)} this method will throw {@link IllegalArgumentException}
+     * if one of the feature names is not present in this example's {@link ImmutableFeatureMap}.
+     * <p>
+     * {@code featureList} must be sorted lexicographically using the {@link String}
+     * comparator, and behaviour is undefined otherwise.
+     * @param featureList A *sorted* list of feature names.
+     */
     @Override
     public void densify(List<String> featureList) {
-        if (featureList.size() != featureMap.size()) {
-            throw new IllegalArgumentException("Densifying an example with a different feature map");
-        }
         // Ensure we have enough space.
         if (featureList.size() > featureNames.length) {
             growArray(featureList.size());
@@ -376,10 +382,14 @@ public class IndexedArrayExample<T extends Output<T>> extends ArrayExample<T> {
         int insertedCount = 0;
         int curPos = 0;
         for (String curName : featureList) {
+            int newId = featureMap.getID(curName);
+            if (newId == -1) {
+                throw new IllegalArgumentException("Unexpected feature name '" + curName + "'");
+            }
             // If we've reached the end of our old feature set, just insert.
             if (curPos == size) {
                 featureNames[size + insertedCount] = curName;
-                featureIDs[size + insertedCount] = featureMap.getID(curName);
+                featureIDs[size + insertedCount] = newId;
                 insertedCount++;
             } else {
                 // Check to see if our insertion candidate is the same as the current feature name.
@@ -387,7 +397,7 @@ public class IndexedArrayExample<T extends Output<T>> extends ArrayExample<T> {
                 if (comparison < 0) {
                     // If it's earlier, insert it.
                     featureNames[size + insertedCount] = curName;
-                    featureIDs[size + insertedCount] = featureMap.getID(curName);
+                    featureIDs[size + insertedCount] = newId;
                     insertedCount++;
                 } else if (comparison == 0) {
                     // Otherwise just bump our pointer, we've already got this feature.
@@ -435,6 +445,7 @@ public class IndexedArrayExample<T extends Output<T>> extends ArrayExample<T> {
         IndexedArrayExampleProto.Builder exampleBuilder = IndexedArrayExampleProto.newBuilder();
         exampleBuilder.setWeight(weight);
         exampleBuilder.setOutput(output.serialize());
+        exampleBuilder.setOutputIdx(outputID);
         for (int i = 0; i < size; i++) {
             exampleBuilder.addFeatureName(featureNames[i]);
             exampleBuilder.addFeatureIdx(featureIDs[i]);
@@ -448,6 +459,8 @@ public class IndexedArrayExample<T extends Output<T>> extends ArrayExample<T> {
                 exampleBuilder.putMetadata(e.getKey(), e.getValue().toString());
             }
         }
+        exampleBuilder.setFeatureDomain(featureMap.serialize());
+        exampleBuilder.setOutputDomain(outputMap.serialize());
 
         builder.setSerializedData(Any.pack(exampleBuilder.build()));
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,12 +33,14 @@ import org.tribuo.interop.tensorflow.protos.FeatureConverterProto;
 import org.tribuo.math.la.DenseVector;
 import org.tribuo.math.la.SGDVector;
 import org.tribuo.math.la.VectorTuple;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializableClass;
 import org.tribuo.protos.ProtoSerializableField;
 import org.tribuo.protos.ProtoUtil;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.logging.Logger;
 
@@ -47,7 +49,6 @@ import java.util.logging.Logger;
  */
 @ProtoSerializableClass(serializedDataClass = DenseFeatureConverterProto.class, version = DenseFeatureConverter.CURRENT_VERSION)
 public class DenseFeatureConverter implements FeatureConverter {
-    private static final long serialVersionUID = 1L;
     private static final Logger logger = Logger.getLogger(DenseFeatureConverter.class.getName());
 
     /**
@@ -89,10 +90,11 @@ public class DenseFeatureConverter implements FeatureConverter {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static DenseFeatureConverter deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static DenseFeatureConverter deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -103,6 +105,18 @@ public class DenseFeatureConverter implements FeatureConverter {
     @Override
     public FeatureConverterProto serialize() {
         return ProtoUtil.serialize(this);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (o == null || getClass() != o.getClass()) return false;
+        DenseFeatureConverter that = (DenseFeatureConverter) o;
+        return Objects.equals(inputName, that.inputName);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(inputName);
     }
 
     float[] innerTransform(Example<?> example, ImmutableFeatureMap featureIDMap) {

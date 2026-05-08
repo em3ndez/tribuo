@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,26 +27,21 @@ import org.tribuo.ImmutableOutputInfo;
 import org.tribuo.Model;
 import org.tribuo.Output;
 import org.tribuo.Prediction;
-import org.tribuo.common.nearest.KNNTrainer.Distance;
 import org.tribuo.common.nearest.protos.KNNModelProto;
 import org.tribuo.ensemble.EnsembleCombiner;
 import org.tribuo.impl.ModelDataCarrier;
-import org.tribuo.math.la.DenseVector;
+import org.tribuo.math.distance.Distance;
 import org.tribuo.math.la.SGDVector;
-import org.tribuo.math.la.SparseVector;
 import org.tribuo.math.la.Tensor;
 import org.tribuo.math.neighbour.NeighboursQuery;
 import org.tribuo.math.neighbour.NeighboursQueryFactory;
-import org.tribuo.math.neighbour.bruteforce.NeighboursBruteForceFactory;
 import org.tribuo.math.protos.TensorProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.protos.core.OutputProto;
 import org.tribuo.provenance.ModelProvenance;
 
-import java.io.IOException;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -58,7 +53,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.ForkJoinWorkerThread;
 import java.util.concurrent.Future;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -68,24 +62,15 @@ import java.util.stream.Stream;
 
 /**
  * A k-nearest neighbours model.
- * <p>
- * Note multi-threaded prediction uses a {@link ForkJoinPool} which requires that the Tribuo codebase
- * is given the "modifyThread" and "modifyThreadGroup" privileges when running under a
- * {@link java.lang.SecurityManager}.
  */
 public class KNNModel<T extends Output<T>> extends Model<T> {
 
     private static final Logger logger = Logger.getLogger(KNNModel.class.getName());
 
-    private static final long serialVersionUID = 1L;
-
     /**
      * Protobuf serialization version.
      */
     public static final int CURRENT_VERSION = 0;
-
-    // Thread factory for the FJP, to allow use with OpenSearch's SecureSM
-    private static final CustomForkJoinWorkerThreadFactory THREAD_FACTORY = new CustomForkJoinWorkerThreadFactory();
 
     /**
      * The parallel backend for batch predictions.
@@ -108,12 +93,7 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
     private final Pair<SGDVector,T>[] vectors;
 
     private final int k;
-    @Deprecated
-    private Distance distance;
-
-    // This is not final to support deserialization of older models. It will be final in a future version which doesn't
-    // maintain serialization compatibility with 4.X.
-    private org.tribuo.math.distance.Distance dist;
+    private final Distance dist;
 
     private final int numThreads;
 
@@ -128,7 +108,7 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
     private transient NeighboursQuery neighboursQuery;
 
     KNNModel(String name, ModelProvenance provenance, ImmutableFeatureMap featureIDMap, ImmutableOutputInfo<T> outputIDInfo,
-             boolean generatesProbabilities, int k, org.tribuo.math.distance.Distance dist, int numThreads, EnsembleCombiner<T> combiner,
+             boolean generatesProbabilities, int k, Distance dist, int numThreads, EnsembleCombiner<T> combiner,
              Pair<SGDVector,T>[] vectors, Backend backend, NeighboursQueryFactory neighboursQueryFactory) {
         super(name,provenance,featureIDMap,outputIDInfo,generatesProbabilities);
         this.k = k;
@@ -146,21 +126,22 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"unchecked","rawtypes"}) // Guarded by getClass checks to ensure all outputs are the same type.
-    public static KNNModel<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static KNNModel<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         KNNModelProto proto = message.unpack(KNNModelProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         ImmutableFeatureMap featureDomain = carrier.featureDomain();
         ImmutableOutputInfo<?> outputDomain = carrier.outputDomain();
         Class<?> outputClass = outputDomain.getOutput(0).getClass();
-        EnsembleCombiner<?> combiner = EnsembleCombiner.deserialize(proto.getCombiner());
+        EnsembleCombiner<?> combiner = EnsembleCombiner.deserialize(proto.getCombiner(), deserCache);
         if (!outputClass.equals(combiner.getTypeWitness())) {
             throw new IllegalStateException("Invalid protobuf, combiner and output domain have a type mismatch, expected " + outputClass + " found " + combiner.getTypeWitness());
         }
@@ -201,7 +182,7 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
             }
         }
 
-        org.tribuo.math.distance.Distance dist = ProtoUtil.deserialize(proto.getDistance());
+        org.tribuo.math.distance.Distance dist = ProtoUtil.deserialize(proto.getDistance(), deserCache);
         Backend backend = Backend.valueOf(proto.getParallelBackend());
         NeighboursQueryFactory queryFactory = NeighboursQueryFactory.deserialize(proto.getNeighboursQueryFactory());
 
@@ -211,32 +192,28 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
 
     @Override
     public Prediction<T> predict(Example<T> example) {
-        SGDVector input;
-        if (example.size() == featureIDMap.size()) {
-            input = DenseVector.createDenseVector(example, featureIDMap, false);
-        } else {
-            input = SparseVector.createSparseVector(example, featureIDMap, false);
-        }
+        SGDVector input = SGDVector.createFromExample(example, featureIDMap, false);
 
-        if (input.numActiveElements() == 0) {
+        if (input.numNonZeroElements() == 0) {
             throw new IllegalArgumentException("No features found in Example " + example);
         }
 
         Function<Pair<SGDVector,T>, OutputDoublePair<T>> distanceFunc =
             (a) -> new OutputDoublePair<>(a.getB(), dist.computeDistance(a.getA(), input));
 
+        Function<OutputDoublePair<T>, Prediction<T>> pred =
+                (a) -> new Prediction<>(a.output, input.numNonZeroElements(), example);
         List<Prediction<T>> predictions;
         Stream<Pair<SGDVector,T>> stream = Stream.of(vectors);
         if (numThreads > 1) {
-            ForkJoinPool fjp = System.getSecurityManager() == null ? new ForkJoinPool(numThreads) : new ForkJoinPool(numThreads, THREAD_FACTORY, null, false);
-            try {
-                predictions = fjp.submit(()->StreamUtil.boundParallelism(stream.parallel()).map(distanceFunc).sorted().limit(k).map((a) -> new Prediction<>(a.output, input.numActiveElements(), example)).collect(Collectors.toList())).get();
+            try (ForkJoinPool fjp = new ForkJoinPool(numThreads)){
+                predictions = fjp.submit(()->StreamUtil.boundParallelism(stream.parallel()).map(distanceFunc).sorted().limit(k).map(pred).collect(Collectors.toList())).get();
             } catch (InterruptedException | ExecutionException e) {
                 logger.log(Level.SEVERE,"Exception when predicting in KNNModel",e);
                 throw new IllegalStateException("Failed to process example in parallel",e);
             }
         } else {
-            predictions = stream.map(distanceFunc).sorted().limit(k).map((a) -> new Prediction<>(a.output, input.numActiveElements(), example)).collect(Collectors.toList());
+            predictions = stream.map(distanceFunc).sorted().limit(k).map(pred).collect(Collectors.toList());
         }
 
         return combiner.combine(outputIDInfo,predictions);
@@ -258,18 +235,13 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
 
             for (Example<T> example : examples) {
                 innerPredictions.clear();
-                SGDVector input;
-                if (example.size() == featureIDMap.size()) {
-                    input = DenseVector.createDenseVector(example, featureIDMap, false);
-                } else {
-                    input = SparseVector.createSparseVector(example, featureIDMap, false);
-                }
+                SGDVector input = SGDVector.createFromExample(example, featureIDMap, false);
 
                 List<Pair<Integer, Double>> indexDistancePairList = neighboursQuery.query(input, k);
 
                 for (Pair<Integer, Double> simplePair : indexDistancePairList) {
                     Pair<SGDVector,T> pair = vectors[simplePair.getA()];
-                    innerPredictions.add(new Prediction<>(pair.getB(), input.numActiveElements(), example));
+                    innerPredictions.add(new Prediction<>(pair.getB(), input.numNonZeroElements(), example));
                 }
 
                 predictions.add(combiner.combine(outputIDInfo, innerPredictions));
@@ -284,19 +256,20 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
      * @return The predictions.
      */
     private List<Prediction<T>> innerPredictMultithreaded(Iterable<Example<T>> examples) {
-        switch (parallelBackend) {
-            case STREAMS:
+        return switch (parallelBackend) {
+            case STREAMS -> {
                 logger.log(Level.FINE, "Parallel backend - streams");
-                return innerPredictStreams(examples);
-            case THREADPOOL:
+                yield innerPredictStreams(examples);
+            }
+            case THREADPOOL -> {
                 logger.log(Level.FINE, "Parallel backend - threadpool");
-                return innerPredictThreadPool(examples);
-            case INNERTHREADPOOL:
+                yield innerPredictThreadPool(examples);
+            }
+            case INNERTHREADPOOL -> {
                 logger.log(Level.FINE, "Parallel backend - within example threadpool");
-                return innerPredictWithinExampleThreadPool(examples);
-            default:
-                throw new IllegalArgumentException("Unknown backend " + parallelBackend);
-        }
+                yield innerPredictWithinExampleThreadPool(examples);
+            }
+        };
     }
 
     /**
@@ -307,26 +280,22 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
     private List<Prediction<T>> innerPredictStreams(Iterable<Example<T>> examples) {
         List<Prediction<T>> predictions = new ArrayList<>();
         List<Prediction<T>> innerPredictions = null;
-        ForkJoinPool fjp = System.getSecurityManager() == null ? new ForkJoinPool(numThreads) : new ForkJoinPool(numThreads, THREAD_FACTORY, null, false);
-        for (Example<T> example : examples) {
-            SGDVector input;
-            if (example.size() == featureIDMap.size()) {
-                input = DenseVector.createDenseVector(example, featureIDMap, false);
-            } else {
-                input = SparseVector.createSparseVector(example, featureIDMap, false);
+        try (ForkJoinPool fjp = new ForkJoinPool(numThreads)) {
+            for (Example<T> example : examples) {
+                SGDVector input = SGDVector.createFromExample(example, featureIDMap, false);
+
+                Function<Pair<SGDVector, T>, OutputDoublePair<T>> distanceFunc =
+                        (a) -> new OutputDoublePair<>(a.getB(), dist.computeDistance(a.getA(), input));
+
+                Stream<Pair<SGDVector, T>> stream = Stream.of(vectors);
+                try {
+                    innerPredictions = fjp.submit(() -> StreamUtil.boundParallelism(stream.parallel()).map(distanceFunc).sorted().limit(k).map((a) -> new Prediction<>(a.output, input.numNonZeroElements(), example)).collect(Collectors.toList())).get();
+                } catch (InterruptedException | ExecutionException e) {
+                    logger.log(Level.SEVERE, "Exception when predicting in KNNModel", e);
+                }
+
+                predictions.add(combiner.combine(outputIDInfo, innerPredictions));
             }
-
-            Function<Pair<SGDVector, T>, OutputDoublePair<T>> distanceFunc =
-                (a) -> new OutputDoublePair<>(a.getB(), dist.computeDistance(a.getA(), input));
-
-            Stream<Pair<SGDVector, T>> stream = Stream.of(vectors);
-            try {
-                innerPredictions = fjp.submit(() -> StreamUtil.boundParallelism(stream.parallel()).map(distanceFunc).sorted().limit(k).map((a) -> new Prediction<>(a.output, input.numActiveElements(), example)).collect(Collectors.toList())).get();
-            } catch (InterruptedException | ExecutionException e) {
-                logger.log(Level.SEVERE, "Exception when predicting in KNNModel", e);
-            }
-
-            predictions.add(combiner.combine(outputIDInfo, innerPredictions));
         }
 
         return predictions;
@@ -387,7 +356,7 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
                                                  ThreadLocal<PriorityQueue<OutputDoublePair<T>>> queuePool,
                                                  org.tribuo.math.distance.Distance dist,
                                                  Example<T> example) {
-        SparseVector vector = SparseVector.createSparseVector(example, featureIDMap, false);
+        SGDVector vector = SGDVector.createFromExample(example, featureIDMap, false);
         List<Future<List<OutputDoublePair<T>>>> futures = new ArrayList<>();
 
         for (int i = 0; i < numThreads; i++) {
@@ -416,7 +385,7 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
         List<Prediction<T>> predictions = new ArrayList<>();
 
         for (OutputDoublePair<T> pair : queue) {
-            predictions.add(new Prediction<>(pair.output,vector.numActiveElements(),example));
+            predictions.add(new Prediction<>(pair.output,vector.numNonZeroElements(),example));
         }
 
         return combiner.combine(outputIDInfo,predictions);
@@ -458,12 +427,7 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
                                                                     ImmutableOutputInfo<T> outputIDInfo,
                                                                     int k,
                                                                     Example<T> example) {
-        SGDVector vector;
-        if (example.size() == featureIDMap.size()) {
-            vector = DenseVector.createDenseVector(example, featureIDMap, false);
-        } else {
-            vector = SparseVector.createSparseVector(example, featureIDMap, false);
-        }
+        SGDVector vector = SGDVector.createFromExample(example, featureIDMap, false);
 
         List<Pair<Integer, Double>> indexDistancePairList = nq.query(vector, k);
 
@@ -471,7 +435,7 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
 
         for (Pair<Integer, Double> simplePair : indexDistancePairList) {
             Pair<SGDVector,T> pair = vectors[simplePair.getA()];
-            localPredictions.add(new Prediction<>(pair.getB(), vector.numActiveElements(), example));
+            localPredictions.add(new Prediction<>(pair.getB(), vector.numNonZeroElements(), example));
         }
 
         return combiner.combine(outputIDInfo,localPredictions);
@@ -523,17 +487,6 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
             numThreads,combiner,vectorCopy,parallelBackend,neighboursQueryFactory);
     }
 
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        if (dist == null) {
-            dist = distance.getDistanceType().getDistance();
-        }
-        if (neighboursQueryFactory == null) {
-            neighboursQueryFactory = new NeighboursBruteForceFactory(dist, numThreads);
-        }
-        neighboursQuery = neighboursQueryFactory.createNeighboursQuery(getSGDVectorArr());
-    }
-
     private SGDVector[] getSGDVectorArr() {
         SGDVector[] sgdVectors = new SGDVector[vectors.length];
         int n = 0;
@@ -577,12 +530,4 @@ public class KNNModel<T extends Output<T>> extends Model<T> {
         }
     }
 
-    /**
-     * Used to allow FJPs to work with OpenSearch's SecureSM.
-     */
-    private static final class CustomForkJoinWorkerThreadFactory implements ForkJoinPool.ForkJoinWorkerThreadFactory {
-        public final ForkJoinWorkerThread newThread(ForkJoinPool pool) {
-            return AccessController.doPrivileged((PrivilegedAction<ForkJoinWorkerThread>) () -> new ForkJoinWorkerThread(pool) {});
-        }
-    }
 }

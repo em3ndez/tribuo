@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.oracle.labs.mlrg.olcut.util.Pair;
-import org.tensorflow.proto.framework.GraphDef;
+import org.tensorflow.proto.GraphDef;
 import org.tribuo.ImmutableFeatureMap;
 import org.tribuo.ImmutableOutputInfo;
 import org.tribuo.Output;
@@ -30,6 +30,7 @@ import org.tribuo.interop.tensorflow.TensorMap;
 import org.tribuo.interop.tensorflow.TensorFlowUtil;
 import org.tribuo.interop.tensorflow.protos.TensorFlowSequenceModelProto;
 import org.tribuo.interop.tensorflow.protos.TensorTupleProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.SequenceModelProto;
 import org.tribuo.provenance.ModelProvenance;
@@ -39,7 +40,6 @@ import org.tensorflow.Graph;
 import org.tensorflow.Session;
 import org.tensorflow.Tensor;
 
-import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -52,15 +52,13 @@ import java.util.Map;
  */
 public class TensorFlowSequenceModel<T extends Output<T>> extends SequenceModel<T> implements AutoCloseable {
 
-    private static final long serialVersionUID = 200L;
-
     /**
      * Protobuf serialization version.
      */
     public static final int CURRENT_VERSION = 0;
 
-    private transient Graph modelGraph = null;
-    private transient Session session = null;
+    private final Graph modelGraph;
+    private final Session session;
 
     protected final SequenceFeatureConverter featureConverter;
     protected final SequenceOutputConverter<T> outputConverter;
@@ -93,20 +91,21 @@ public class TensorFlowSequenceModel<T extends Output<T>> extends SequenceModel<
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"rawtypes","unchecked"}) // guarded by a getClass check that the output domain and converter are compatible
-    public static TensorFlowSequenceModel<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static TensorFlowSequenceModel<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         TensorFlowSequenceModelProto proto = message.unpack(TensorFlowSequenceModelProto.class);
 
-        SequenceOutputConverter<?> outputConverter = ProtoUtil.deserialize(proto.getOutputConverter());
-        SequenceFeatureConverter featureConverter = ProtoUtil.deserialize(proto.getFeatureConverter());
+        SequenceOutputConverter<?> outputConverter = ProtoUtil.deserialize(proto.getOutputConverter(), deserCache);
+        SequenceFeatureConverter featureConverter = ProtoUtil.deserialize(proto.getFeatureConverter(), deserCache);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(outputConverter.getTypeWitness())) {
             throw new IllegalStateException("Invalid protobuf, output domain does not match converter, found " + carrier.outputDomain().getClass() + " and " + outputConverter.getTypeWitness());
         }
@@ -182,22 +181,4 @@ public class TensorFlowSequenceModel<T extends Output<T>> extends SequenceModel<
         return builder.build();
     }
 
-    private void writeObject(java.io.ObjectOutputStream out) throws IOException {
-        out.defaultWriteObject();
-        byte[] modelBytes = modelGraph.toGraphDef().toByteArray();
-        out.writeObject(modelBytes);
-        Map<String, TensorFlowUtil.TensorTuple> tensorMap = TensorFlowUtil.extractMarshalledVariables(modelGraph, session);
-        out.writeObject(tensorMap);
-    }
-
-    @SuppressWarnings("unchecked") //deserialising a typed map
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        byte[] modelBytes = (byte[]) in.readObject();
-        Map<String, TensorFlowUtil.TensorTuple> tensorMap = (Map<String, TensorFlowUtil.TensorTuple>) in.readObject();
-        modelGraph = new Graph();
-        modelGraph.importGraphDef(GraphDef.parseFrom(modelBytes));
-        session = new Session(modelGraph);
-        TensorFlowUtil.restoreMarshalledVariables(session,tensorMap);
-    }
 }

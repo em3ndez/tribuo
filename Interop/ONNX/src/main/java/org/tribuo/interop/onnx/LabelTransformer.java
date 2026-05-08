@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package org.tribuo.interop.onnx;
 
 import ai.onnxruntime.OnnxJavaType;
+import ai.onnxruntime.OnnxMap;
 import ai.onnxruntime.OnnxSequence;
 import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OnnxValue;
@@ -33,6 +34,7 @@ import org.tribuo.Prediction;
 import org.tribuo.classification.Label;
 import org.tribuo.interop.onnx.protos.LabelTransformerProto;
 import org.tribuo.interop.onnx.protos.OutputTransformerProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializableClass;
 import org.tribuo.protos.ProtoSerializableField;
 import org.tribuo.protos.ProtoUtil;
@@ -62,7 +64,6 @@ import java.util.logging.Logger;
  */
 @ProtoSerializableClass(serializedDataClass = LabelTransformerProto.class, version = LabelTransformer.CURRENT_VERSION)
 public class LabelTransformer implements OutputTransformer<Label> {
-    private static final long serialVersionUID = 1L;
     private static final Logger logger = Logger.getLogger(LabelTransformer.class.getName());
 
     /**
@@ -94,10 +95,11 @@ public class LabelTransformer implements OutputTransformer<Label> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static LabelTransformer deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static LabelTransformer deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -184,8 +186,9 @@ public class LabelTransformer implements OutputTransformer<Label> {
                         float[][] outputArray = new float[output.size()][outputIDInfo.size()];
                         int i = 0;
                         for (Object o : output) {
+                            OnnxMap onnxMap = (OnnxMap) o;
                             @SuppressWarnings("unchecked") // guarded by the if on the mapInfo above.
-                            Map<Long,Float> map = (Map<Long,Float>) o;
+                            Map<Long,Float> map = (Map<Long,Float>) onnxMap.getValue();
                             if (map.size() == outputIDInfo.size()) {
                                 for (Map.Entry<Long,Float> e : map.entrySet()) {
                                     Long key = e.getKey();

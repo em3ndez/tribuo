@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,9 +20,8 @@ import com.oracle.labs.mlrg.olcut.config.Configurable;
 import com.oracle.labs.mlrg.olcut.provenance.ConfiguredObjectProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.Provenancable;
 import org.tribuo.protos.ProtoSerializable;
+import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.HasherProto;
-
-import java.io.Serializable;
 
 /**
  * An abstract base class for hash functions used to hash the names of features.
@@ -30,9 +29,8 @@ import java.io.Serializable;
  * Hasher implementations do not serialize the salt in their serialized forms, and
  * thus the salt must be set after deserialization.
  */
-public abstract class Hasher implements Configurable, Provenancable<ConfiguredObjectProvenance>, Serializable,
-        ProtoSerializable<HasherProto>  {
-    private static final long serialVersionUID = 2L;
+public abstract class Hasher implements Configurable, Provenancable<ConfiguredObjectProvenance>,
+        ProtoSerializable<HasherProto> {
 
     /**
      * The minimum length of the salt. Salts shorter than this will not validate.
@@ -69,4 +67,15 @@ public abstract class Hasher implements Configurable, Provenancable<ConfiguredOb
         return salt.length() > MIN_LENGTH;
     }
 
+    /**
+     * Deserializes a {@link HasherProto} into a {@link Hasher} subclass.
+     * @param proto The proto to deserialize.
+     * @param salt The salt to insert into the deserialized Hasher.
+     * @return The deserialized Hasher.
+     */
+    public static Hasher deserialize(HasherProto proto, String salt) {
+        Hasher hsh = ProtoUtil.deserialize(proto);
+        hsh.setSalt(salt);
+        return hsh;
+    }
 }

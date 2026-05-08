@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@ import org.tribuo.common.libsvm.LibSVMModel;
 import org.tribuo.common.libsvm.LibSVMTrainer;
 import org.tribuo.common.libsvm.protos.SVMModelProto;
 import org.tribuo.impl.ModelDataCarrier;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.ModelProvenance;
 import org.tribuo.regression.ImmutableRegressionInfo;
@@ -45,7 +46,6 @@ import org.tribuo.util.onnx.ONNXOperators;
 import org.tribuo.util.onnx.ONNXPlaceholder;
 import org.tribuo.util.onnx.ONNXRef;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -78,7 +78,6 @@ import java.util.stream.Collectors;
  * </pre>
  */
 public class LibSVMRegressionModel extends LibSVMModel<Regressor> implements ONNXExportable {
-    private static final long serialVersionUID = 2L;
 
     /**
      * Protobuf serialization version.
@@ -87,14 +86,13 @@ public class LibSVMRegressionModel extends LibSVMModel<Regressor> implements ONN
 
     private final String[] dimensionNames;
 
-    private double[] means;
+    private final double[] means;
 
-    private double[] variances;
+    private final double[] variances;
 
     private final boolean standardized;
 
-    // Not final as it doesn't exist in 4.0 or 4.1 and so must be created on deserialization.
-    private int[] mapping;
+    private final int[] mapping;
 
     /**
      * Constructs a LibSVMRegressionModel with regular outputs.
@@ -157,16 +155,17 @@ public class LibSVMRegressionModel extends LibSVMModel<Regressor> implements ONN
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static LibSVMRegressionModel deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static LibSVMRegressionModel deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         LibSVMRegressionModelProto proto = message.unpack(LibSVMRegressionModelProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(Regressor.class)) {
             throw new IllegalStateException("Invalid protobuf, output domain is not a regression domain, found " + carrier.outputDomain().getClass());
         }
@@ -352,27 +351,4 @@ public class LibSVMRegressionModel extends LibSVMModel<Regressor> implements ONN
         return builder.build();
     }
 
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-
-        // Add mapping field to 4.0, 4.1 models and rearrange the dimensions.
-        if (mapping == null) {
-            this.mapping = ((ImmutableRegressionInfo) outputIDInfo).getIDtoNaturalOrderMapping();
-            List<svm_model> newModels = new ArrayList<>(this.models);
-            double[] newMeans = new double[newModels.size()];
-            double[] newVariances = new double[newModels.size()];
-
-            for (int i = 0; i < mapping.length; i++) {
-                newModels.set(i,this.models.get(mapping[i]));
-                if (this.means != null) {
-                    newMeans[i] = this.means[mapping[i]];
-                    newVariances[i] = this.variances[mapping[i]];
-                }
-            }
-
-            this.models = Collections.unmodifiableList(newModels);
-            this.means = newMeans;
-            this.variances = newVariances;
-        }
-    }
 }

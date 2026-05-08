@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,14 +25,13 @@ import com.oracle.labs.mlrg.olcut.provenance.ObjectProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.Provenance;
 import com.oracle.labs.mlrg.olcut.provenance.primitives.IntProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.primitives.StringProvenance;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializableClass;
 import org.tribuo.protos.ProtoSerializableField;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.HasherProto;
 import org.tribuo.protos.core.ModHashCodeHasherProto;
 
-import java.io.IOException;
-import java.io.ObjectInputStream;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -45,7 +44,6 @@ import java.util.Objects;
  */
 @ProtoSerializableClass(version = ModHashCodeHasher.CURRENT_VERSION, serializedDataClass = ModHashCodeHasherProto.class)
 public final class ModHashCodeHasher extends Hasher {
-    private static final long serialVersionUID = 2L;
 
     /**
      * Protobuf serialization version.
@@ -55,7 +53,7 @@ public final class ModHashCodeHasher extends Hasher {
     static final String DIMENSION = "dimension";
 
     @Config(mandatory = true,redact = true,description="Salt used in the hash.")
-    private transient String salt = null;
+    private String salt = null;
 
     @ProtoSerializableField
     @Config(mandatory = true,description="Range of the hashing function.")
@@ -94,10 +92,11 @@ public final class ModHashCodeHasher extends Hasher {
      * @param version The version number.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static ModHashCodeHasher deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ModHashCodeHasher deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -169,11 +168,6 @@ public final class ModHashCodeHasher extends Hasher {
     @Override
     public int hashCode() {
         return Objects.hash(salt, dimension);
-    }
-
-    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        salt = null;
     }
 
     /**

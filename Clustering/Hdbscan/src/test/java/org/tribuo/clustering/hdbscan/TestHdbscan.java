@@ -21,6 +21,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.tribuo.DataSource;
 import org.tribuo.Dataset;
+import org.tribuo.Example;
 import org.tribuo.Feature;
 import org.tribuo.Model;
 import org.tribuo.MutableDataset;
@@ -37,6 +38,7 @@ import org.tribuo.data.columnar.RowProcessor;
 import org.tribuo.data.columnar.processors.field.DoubleFieldProcessor;
 import org.tribuo.data.columnar.processors.response.EmptyResponseProcessor;
 import org.tribuo.data.csv.CSVDataSource;
+import org.tribuo.datasource.ListDataSource;
 import org.tribuo.evaluation.TrainTestSplitter;
 import org.tribuo.impl.ArrayExample;
 import org.tribuo.math.distance.DistanceType;
@@ -45,14 +47,20 @@ import org.tribuo.math.la.SGDVector;
 import org.tribuo.math.neighbour.NeighboursQueryFactory;
 import org.tribuo.math.neighbour.NeighboursQueryFactoryType;
 import org.tribuo.math.neighbour.kdtree.KDTreeFactory;
+import org.tribuo.provenance.DataSourceProvenance;
+import org.tribuo.provenance.SimpleDataSourceProvenance;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.test.Helpers;
 
 import java.io.IOException;
-import java.io.ObjectInputStream;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -292,16 +300,13 @@ public class TestHdbscan {
         URL serializedModelPath = this.getClass().getClassLoader().getResource(serializedModelFilename);
 
         HdbscanModel model = null;
-        try (ObjectInputStream oin = new ObjectInputStream(serializedModelPath.openStream())) {
-            Object data = oin.readObject();
-            model = (HdbscanModel) data;
+        try (InputStream is = serializedModelPath.openStream()) {
+            model = (HdbscanModel) Model.deserializeFromStream(is);
             if (!model.validate(ClusterID.class)) {
                 fail("This is not a Clustering model.");
             }
         } catch (IOException e) {
             fail("There is a problem accessing the serialized model file " + serializedModelPath);
-        } catch (ClassNotFoundException e) {
-            fail("There is a problem deserializing the model file " + serializedModelPath);
         }
 
         // In v4.2 models this value is unset and defaults to negative infinity.
@@ -347,7 +352,6 @@ public class TestHdbscan {
 
         HdbscanModel model = trainer.train(trainData);
         // Test serialization
-        Helpers.testModelSerialization(model,ClusterID.class);
         Helpers.testModelProtoSerialization(model, ClusterID.class, testData);
 
         ClusteringEvaluation trainEvaluation = eval.evaluate(model,trainData);
@@ -402,4 +406,89 @@ public class TestHdbscan {
         runSparseData(t);
     }
 
+    @Test
+    public void testContrivedDataset() {
+        final HdbscanTrainer trainer = new HdbscanTrainer(100, DistanceType.L2.getDistance(),
+                10,1, NeighboursQueryFactoryType.BRUTE_FORCE);
+
+        ClusteringFactory outputFactory = new ClusteringFactory();
+        DataSourceProvenance dataProvenance = new SimpleDataSourceProvenance("test", outputFactory);
+
+        List<Example<ClusterID>> dataList = new ArrayList<>();
+        for (int n = 0; n < 10; n++) {
+            for (double i = 1.0; i <= 2.0; i += 0.1) {
+                dataList.add(createClusterExample("A", i));
+            }
+            for (double i = 10.0; i <= 19.0; i += 0.1) {
+                dataList.add(createClusterExample("B", i));
+            }
+        }
+
+        DataSource<ClusterID> dataSource = new ListDataSource<>(dataList, outputFactory, dataProvenance);
+        Dataset<ClusterID> trainData = new MutableDataset<>(dataSource);
+
+        HdbscanModel model = trainer.train(trainData);
+        assertEquals(new HashSet<>(model.getClusterLabels()).size(), 2);
+
+        // Predict on the same training data. A good confirmation to make, but don't do this to evaluate a model.
+        List<Prediction<ClusterID>> predictions = model.predict(trainData);
+
+        int i = 0;
+        for (Prediction<ClusterID> prediction : predictions) {
+            if (i % 100 < 10) {
+                assertEquals(2, prediction.getOutput().getID());
+            }
+            else {
+                assertEquals(3, prediction.getOutput().getID());
+            }
+            i++;
+        }
+    }
+
+    private Example<ClusterID> createClusterExample(String name, double value) {
+        return new ArrayExample<>(ClusteringFactory.UNASSIGNED_CLUSTER_ID, new String[]{name}, new double[]{value});
+    }
+
+    @Test
+    public void loadProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(TestHdbscan.class.getResource("hdbscan-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
+            HdbscanModel model = (HdbscanModel) Model.deserialize(proto);
+
+            assertEquals("4.3.1", model.getProvenance().getTribuoVersion());
+
+            DataSource<ClusterID> gaussianSource = new GaussianClusterDataSource(1000, 1L);
+            TrainTestSplitter<ClusterID> splitter = new TrainTestSplitter<>(gaussianSource, 0.8f, 2L);
+            Dataset<ClusterID> testData = new MutableDataset<>(splitter.getTest());
+            List<Prediction<ClusterID>> predictions = model.predict(testData);
+
+            int i = 0;
+            int[] actualLabelPredictions = new int[testData.size()];
+            double[] actualOutlierScorePredictions = new double[testData.size()];
+            for (Prediction<ClusterID> pred : predictions) {
+                actualLabelPredictions[i] = pred.getOutput().getID();
+                actualOutlierScorePredictions[i] = pred.getOutput().getScore();
+                i++;
+            }
+
+            int[] expectedLabelPredictions = {4,5,3,5,5,3,5,4,5,3,5,5,4,4,4,5,3,4,4,3,3,5,4,5,4,5,3,3,4,5,4,4,5,3,4,5,4,4,5,5,3,5,5,5,4,5,3,4,4,5,5,5,3,3,5,4,3,5,5,5,4,5,4,5,3,4,4,3,3,3,4,5,5,5,5,3,4,5,3,5,5,4,4,4,4,4,4,4,4,5,5,3,4,3,3,5,3,5,5,4,4,4,4,3,3,4,4,4,4,4,3,3,5,5,5,4,4,5,4,5,4,5,4,5,4,5,5,5,4,5,4,4,3,5,4,5,5,3,4,5,5,4,5,4,4,3,3,5,5,5,5,4,4,5,4,4,4,4,5,3,5,5,5,3,4,5,4,4,4,4,4,4,5,5,3,4,3,5,5,5,4,5,5,5,4,4,3,4,5,4,4,5,5,5,5,4,5,5,5,5};
+            double[] expectedOutlierScorePredictions = {0.08118104079195632,0.0,0.04556290658626683,0.010061020299601542,0.029110696378704337,0.08132701192855352,0.010061020299601542,0.07838284850471278,0.025305516244955806,0.08132701192855352,0.03806887171267048,0.02065034905954999,0.08118104079195632,0.0059186060290421505,0.08118104079195632,0.0,0.08132701192855352,0.0059186060290421505,0.08118104079195632,0.0041352367783195065,0.08132701192855352,0.02065034905954999,0.08471089907230389,0.025305516244955806,0.0,0.0,0.0,0.0,0.08118104079195632,0.06314528545928999,0.07838284850471278,0.0059186060290421505,0.010061020299601542,0.0041352367783195065,0.0059186060290421505,0.010061020299601542,0.08118104079195632,0.08118104079195632,0.029110696378704337,0.010061020299601542,0.08132701192855352,0.03806887171267048,0.03806887171267048,0.029110696378704337,0.07406510775737263,0.02065034905954999,0.04556290658626683,0.07838284850471278,0.08118104079195632,0.0,0.0,0.02065034905954999,0.0041352367783195065,0.0,0.03806887171267048,0.08118104079195632,0.0041352367783195065,0.03806887171267048,0.02065034905954999,0.02065034905954999,0.00509618317782945,0.06314528545928999,0.0059186060290421505,0.029110696378704337,0.07860444563433111,0.08118104079195632,0.08471089907230389,0.0041352367783195065,0.0,0.07860444563433111,0.07838284850471278,0.029110696378704337,0.010061020299601542,0.0,0.06314528545928999,0.0041352367783195065,0.08118104079195632,0.029110696378704337,0.0,0.02065034905954999,0.06314528545928999,0.0,0.08471089907230389,0.00509618317782945,0.08212338693601973,0.08471089907230389,0.00509618317782945,0.08118104079195632,0.08118104079195632,0.0,0.025305516244955806,0.0,0.08118104079195632,0.0041352367783195065,0.0,0.06314528545928999,0.08132701192855352,0.025305516244955806,0.029110696378704337,0.07838284850471278,0.08118104079195632,0.0,0.053392009649182115,0.05399443648683844,0.07860444563433111,0.08118104079195632,0.08471089907230389,0.08212338693601973,0.08118104079195632,0.0,0.04556290658626683,0.08132701192855352,0.03806887171267048,0.0,0.0,0.0,0.08118104079195632,0.029110696378704337,0.0059186060290421505,0.02065034905954999,0.08118104079195632,0.02065034905954999,0.053392009649182115,0.010061020299601542,0.07838284850471278,0.02065034905954999,0.010061020299601542,0.0,0.08118104079195632,0.029110696378704337,0.0059186060290421505,0.0,0.08132701192855352,0.025305516244955806,0.0059186060290421505,0.029110696378704337,0.029110696378704337,0.0,0.00509618317782945,0.025305516244955806,0.010061020299601542,0.08118104079195632,0.029110696378704337,0.08118104079195632,0.0059186060290421505,0.08132701192855352,0.0,0.06314528545928999,0.029110696378704337,0.029110696378704337,0.029110696378704337,0.0059186060290421505,0.08212338693601973,0.02065034905954999,0.08118104079195632,0.0059186060290421505,0.0059186060290421505,0.00509618317782945,0.0,0.08132701192855352,0.025305516244955806,0.025305516244955806,0.02065034905954999,0.0,0.08118104079195632,0.03806887171267048,0.08471089907230389,0.07838284850471278,0.07838284850471278,0.08118104079195632,0.07838284850471278,0.07838284850471278,0.02065034905954999,0.029110696378704337,0.07860444563433111,0.07838284850471278,0.08132701192855352,0.03806887171267048,0.025305516244955806,0.010061020299601542,0.08471089907230389,0.029110696378704337,0.025305516244955806,0.03806887171267048,0.08471089907230389,0.0,0.07860444563433111,0.08212338693601973,0.029110696378704337,0.08118104079195632,0.08118104079195632,0.06314528545928999,0.010061020299601542,0.010061020299601542,0.029110696378704337,0.07838284850471278,0.025305516244955806,0.010061020299601542,0.010061020299601542,0.06314528545928999};
+
+            assertArrayEquals(expectedLabelPredictions, actualLabelPredictions);
+            assertArrayEquals(expectedOutlierScorePredictions, actualOutlierScorePredictions);
+        }
+    }
+
+    public void generateProtobuf() throws IOException {
+        HdbscanTrainer trainer = new HdbscanTrainer(5, DistanceType.L2.getDistance(), 5,2, NeighboursQueryFactoryType.KD_TREE);
+
+        DataSource<ClusterID> gaussianSource = new GaussianClusterDataSource(1000, 1L);
+        TrainTestSplitter<ClusterID> splitter = new TrainTestSplitter<>(gaussianSource, 0.8f, 2L);
+        Dataset<ClusterID> trainData = new MutableDataset<>(splitter.getTrain());
+
+        HdbscanModel model = trainer.train(trainData);
+
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","clustering","hdbscan","hdbscan-431.tribuo"));
+    }
 }

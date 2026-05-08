@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ import org.tribuo.common.liblinear.LibLinearModel;
 import org.tribuo.common.liblinear.LibLinearTrainer;
 import org.tribuo.common.liblinear.protos.LibLinearModelProto;
 import org.tribuo.impl.ModelDataCarrier;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.provenance.ModelProvenance;
 import org.tribuo.regression.ImmutableRegressionInfo;
 import org.tribuo.regression.Regressor;
@@ -79,14 +80,13 @@ import java.util.logging.Logger;
  * </pre>
  */
 public class LibLinearRegressionModel extends LibLinearModel<Regressor> implements ONNXExportable {
-    private static final long serialVersionUID = 2L;
 
     private static final Logger logger = Logger.getLogger(LibLinearRegressionModel.class.getName());
 
     private final String[] dimensionNames;
 
     // Not final as it doesn't exist in 4.0 or 4.1 and so must be created on deserialization.
-    private int[] mapping;
+    private final int[] mapping;
 
     LibLinearRegressionModel(String name, ModelProvenance description, ImmutableFeatureMap featureIDMap, ImmutableOutputInfo<Regressor> outputInfo, List<de.bwaldvogel.liblinear.Model> models) {
         super(name, description, featureIDMap, outputInfo, false, models);
@@ -99,10 +99,11 @@ public class LibLinearRegressionModel extends LibLinearModel<Regressor> implemen
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static LibLinearRegressionModel deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static LibLinearRegressionModel deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -111,7 +112,7 @@ public class LibLinearRegressionModel extends LibLinearModel<Regressor> implemen
         }
         LibLinearModelProto proto = message.unpack(LibLinearModelProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(Regressor.class)) {
             throw new IllegalStateException("Invalid protobuf, output domain is not a regression domain, found " + carrier.outputDomain().getClass());
         }
@@ -125,10 +126,11 @@ public class LibLinearRegressionModel extends LibLinearModel<Regressor> implemen
             List<de.bwaldvogel.liblinear.Model> models = new ArrayList<>();
             for (ByteString modelArray : proto.getModelsList()) {
                 ByteArrayInputStream bais = new ByteArrayInputStream(modelArray.toByteArray());
-                ObjectInputStream ois = new ObjectInputStream(bais);
-                de.bwaldvogel.liblinear.Model model = (de.bwaldvogel.liblinear.Model) ois.readObject();
-                ois.close();
-                models.add(model);
+                try (ObjectInputStream ois = new ObjectInputStream(bais)) {
+                    ois.setObjectInputFilter(LIBLINEAR_FILTER);
+                    de.bwaldvogel.liblinear.Model model = (de.bwaldvogel.liblinear.Model) ois.readObject();
+                    models.add(model);
+                }
             }
             return new LibLinearRegressionModel(carrier.name(),carrier.provenance(),carrier.featureDomain(),outputDomain,Collections.unmodifiableList(models));
         } catch (IOException | ClassNotFoundException e) {
@@ -281,19 +283,4 @@ public class LibLinearRegressionModel extends LibLinearModel<Regressor> implemen
         return input.apply(ONNXOperators.GEMM, Arrays.asList(onnxWeights, onnxBiases));
     }
 
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-
-        // Add mapping field to 4.0, 4.1 models and rearrange the dimensions.
-        if (mapping == null) {
-            this.mapping = ((ImmutableRegressionInfo) outputIDInfo).getIDtoNaturalOrderMapping();
-            List<de.bwaldvogel.liblinear.Model> newModels = new ArrayList<>(this.models);
-
-            for (int i = 0; i < mapping.length; i++) {
-                newModels.set(i,this.models.get(mapping[i]));
-            }
-
-            this.models = Collections.unmodifiableList(newModels);
-        }
-    }
 }

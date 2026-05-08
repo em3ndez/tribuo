@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,9 +25,11 @@ import org.tribuo.DataSource;
 import org.tribuo.Dataset;
 import org.tribuo.Model;
 import org.tribuo.MutableDataset;
+import org.tribuo.Prediction;
 import org.tribuo.SparseModel;
 import org.tribuo.SparseTrainer;
 import org.tribuo.interop.onnx.OnnxTestUtils;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.regression.Regressor;
 import org.tribuo.regression.evaluation.RegressionEvaluation;
 import org.tribuo.regression.evaluation.RegressionEvaluator;
@@ -36,10 +38,11 @@ import org.tribuo.regression.example.RegressionDataGenerator;
 import org.tribuo.test.Helpers;
 
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.net.URL;
+import java.io.InputStream;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
@@ -47,6 +50,7 @@ import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestSLM {
@@ -59,9 +63,6 @@ public class TestSLM {
 
     private static final ElasticNetCDTrainer ELASTIC_NET = new ElasticNetCDTrainer(1.0,0.5,1e-4,500,false,0);
     private static final RegressionEvaluator e = new RegressionEvaluator();
-
-    private static final URL TEST_REGRESSION_REORDER_ENET_MODEL = TestSLM.class.getResource("enet-4.1.0.model");
-    private static final URL TEST_REGRESSION_REORDER_LARS_MODEL = TestSLM.class.getResource("lars-4.1.0.model");
 
     @BeforeAll
     public static void turnDownLogging() {
@@ -128,19 +129,14 @@ public class TestSLM {
     public void testDenseData() {
         Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
         Model<Regressor> sfs = testSFS(p,false);
-        Helpers.testModelSerialization(sfs,Regressor.class);
         Helpers.testModelProtoSerialization(sfs,Regressor.class,p.getB());
         Model<Regressor> sfsn = testSFSN(p,false);
-        Helpers.testModelSerialization(sfsn,Regressor.class);
         Helpers.testModelProtoSerialization(sfsn,Regressor.class,p.getB());
         Model<Regressor> lars = testLARS(p,false);
-        Helpers.testModelSerialization(lars,Regressor.class);
         Helpers.testModelProtoSerialization(lars,Regressor.class,p.getB());
         Model<Regressor> lasso = testLASSO(p,false);
-        Helpers.testModelSerialization(lasso,Regressor.class);
         Helpers.testModelProtoSerialization(lasso,Regressor.class,p.getB());
         Model<Regressor> elastic = testElasticNet(p,false);
-        Helpers.testModelSerialization(elastic,Regressor.class);
         Helpers.testModelProtoSerialization(elastic,Regressor.class,p.getB());
     }
 
@@ -183,7 +179,7 @@ public class TestSLM {
         testSFSN(p,true);
         testLARS(p,true);
         Model<Regressor> lasso = testLASSO(p,true);
-        Helpers.testModelSerialization(lasso,Regressor.class);
+        Helpers.testModelProtoSerialization(lasso,Regressor.class);
         testElasticNet(p,true);
     }
 
@@ -278,36 +274,37 @@ public class TestSLM {
     }
 
     @Test
-    public void testRegressionReordering() throws IOException, ClassNotFoundException {
-        try (ObjectInputStream ois = new ObjectInputStream(TEST_REGRESSION_REORDER_LARS_MODEL.openStream())) {
+    public void loadProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(TestSLM.class.getResource("lasso-reg-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
             @SuppressWarnings("unchecked")
-            Model<Regressor> serializedModel = (Model<Regressor>) ois.readObject();
-            Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.threeDimDenseTrainTest(1.0, false);
-            RegressionEvaluation llEval = e.evaluate(serializedModel,p.getB());
-            double expectedDim1 = 0.5671244360433836;
-            double expectedDim2 = 0.5671244360433927;
-            double expectedDim3 = -2.457128076868633;
-            double expectedAve = -0.44095973492728563;
+            SparseModel<Regressor> deserModel = (SparseModel<Regressor>) Model.deserialize(proto);
 
-            assertEquals(expectedDim1,llEval.r2(new Regressor(RegressionDataGenerator.firstDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedDim2,llEval.r2(new Regressor(RegressionDataGenerator.secondDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedDim3,llEval.r2(new Regressor(RegressionDataGenerator.thirdDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedAve,llEval.averageR2(),1e-6);
-        }
-        try (ObjectInputStream ois = new ObjectInputStream(TEST_REGRESSION_REORDER_ENET_MODEL.openStream())) {
-            @SuppressWarnings("unchecked")
-            Model<Regressor> serializedModel = (Model<Regressor>) ois.readObject();
-            Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.threeDimDenseTrainTest(1.0, false);
-            RegressionEvaluation llEval = e.evaluate(serializedModel,p.getB());
-            double expectedDim1 = 0.5902193395184064;
-            double expectedDim2 = 0.5902193395184064;
-            double expectedDim3 = 0.2563468291737646;
-            double expectedAve = 0.4789285027368592;
+            assertEquals("4.3.1", deserModel.getProvenance().getTribuoVersion());
 
-            assertEquals(expectedDim1,llEval.r2(new Regressor(RegressionDataGenerator.firstDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedDim2,llEval.r2(new Regressor(RegressionDataGenerator.secondDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedDim3,llEval.r2(new Regressor(RegressionDataGenerator.thirdDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedAve,llEval.averageR2(),1e-6);
+            Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
+
+            List<Prediction<Regressor>> deserOutput = deserModel.predict(p.getB());
+
+            LARSLassoTrainer trainer = new LARSLassoTrainer(-1);
+            SparseModel<Regressor> model = trainer.train(p.getA());
+            List<Prediction<Regressor>> output = model.predict(p.getB());
+
+            assertEquals(deserOutput.size(), p.getB().size());
+            assertTrue(Helpers.predictionListDistributionEquals(deserOutput, output));
         }
     }
+
+    /**
+     * Test protobuf generation method.
+     * @throws IOException If the write failed.
+     */
+    public void generateModel() throws IOException {
+        Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
+        LARSLassoTrainer trainer = new LARSLassoTrainer(-1);
+        SparseModel<Regressor> model = trainer.train(p.getA());
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","regression","slm","lasso-reg-431.tribuo"));
+    }
+
 }

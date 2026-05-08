@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@
 
 package org.tribuo;
 
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.FeatureDomainProto;
 import org.tribuo.protos.ProtoSerializable;
 import org.tribuo.protos.ProtoSerializableMapValuesField;
 import org.tribuo.protos.ProtoUtil;
 
-import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -33,8 +33,7 @@ import java.util.TreeMap;
  * A map from Strings to {@link VariableInfo} objects storing
  * information about a feature.
  */
-public abstract class FeatureMap implements Serializable, ProtoSerializable<FeatureDomainProto>, Iterable<VariableInfo> {
-    private static final long serialVersionUID = 1L;
+public abstract class FeatureMap implements  ProtoSerializable<FeatureDomainProto>, Iterable<VariableInfo> {
 
     /**
      * Map from the feature names to their info.
@@ -166,7 +165,22 @@ public abstract class FeatureMap implements Serializable, ProtoSerializable<Feat
      * @return The deserialized FeatureMap.
      */
     public static FeatureMap deserialize(FeatureDomainProto proto) {
-        return ProtoUtil.deserialize(proto);
+        return deserialize(proto, new ProtoDeserializationCache());
+    }
+
+    /**
+     * Deserializes a {@link FeatureDomainProto} into a {@link FeatureMap} subclass, canonicalising it with respect
+     * to the deserialization cache if it is immutable.
+     * @param proto The proto to deserialize.
+     * @param deserCache The deserialization cache.
+     * @return The deserialized FeatureMap.
+     */
+    public static FeatureMap deserialize(FeatureDomainProto proto, ProtoDeserializationCache deserCache) {
+        FeatureMap f = ProtoUtil.deserialize(proto, deserCache);
+        if (f instanceof ImmutableFeatureMap imF) {
+            f = deserCache.canonicalise(imF);
+        }
+        return f;
     }
 
 }

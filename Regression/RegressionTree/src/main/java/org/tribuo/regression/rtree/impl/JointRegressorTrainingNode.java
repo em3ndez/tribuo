@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,8 +34,6 @@ import org.tribuo.regression.rtree.impurity.RegressorImpurity;
 import org.tribuo.regression.rtree.impurity.RegressorImpurity.ImpurityTuple;
 import org.tribuo.util.Util;
 
-import java.io.IOException;
-import java.io.NotSerializableException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -48,7 +46,6 @@ import java.util.logging.Logger;
  * the current impurity and a bunch of other statistics.
  */
 public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> {
-    private static final long serialVersionUID = 1L;
 
     private static final Logger logger = Logger.getLogger(JointRegressorTrainingNode.class.getName());
 
@@ -77,12 +74,15 @@ public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> 
      * Constructor which creates the inverted file.
      * @param impurity The impurity function to use.
      * @param examples The training data.
+     * @param featureIDMap The feature id mapping.
+     * @param outputIDInfo The output id mapping.
      * @param normalize Normalizes the leaves so each leaf has a distribution which sums to 1.0.
      * @param leafDeterminer Contains parameters needed to determine whether a node is a leaf.
      */
-    public JointRegressorTrainingNode(RegressorImpurity impurity, Dataset<Regressor> examples, boolean normalize,
-                                      LeafDeterminer leafDeterminer) {
-        this(impurity, invertData(examples), examples.size(), examples.getFeatureIDMap(), examples.getOutputIDInfo(),
+    public JointRegressorTrainingNode(RegressorImpurity impurity, Dataset<Regressor> examples,
+                                      ImmutableFeatureMap featureIDMap, ImmutableOutputInfo<Regressor> outputIDInfo,
+                                      boolean normalize, LeafDeterminer leafDeterminer) {
+        this(impurity, invertData(examples, featureIDMap, outputIDInfo), examples.size(), featureIDMap, outputIDInfo,
                 normalize, leafDeterminer);
     }
 
@@ -203,7 +203,7 @@ public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> 
                     greaterThanScore += right.impurity * right.weight;
                 }
                 double score = (lessThanScore + greaterThanScore) / (targets.length * weightSum);
-                if (score < bestScore) {
+                if ((score + IMPURITY_EPSILON) < bestScore) {
                     bestID = i;
                     bestScore = score;
                     bestSplitValue = (feature.get(j).value + feature.get(j + 1).value) / 2.0;
@@ -220,7 +220,7 @@ public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> 
         List<AbstractTrainingNode<Regressor>> output;
         double impurityDecrease = weightSum * (getImpurity() - bestScore);
         // If we found a split better than the current impurity.
-        if ((bestID != -1) && (impurityDecrease >= leafDeterminer.getScaledMinImpurityDecrease())) {
+        if ((bestID != -1) && (impurityDecrease >= (leafDeterminer.getScaledMinImpurityDecrease() + IMPURITY_EPSILON))) {
             output = splitAtBest(featureIDs, bestID, bestSplitValue, bestLeftIndices, bestRightIndices);
         } else {
             output = Collections.emptyList();
@@ -277,7 +277,7 @@ public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> 
             }
 
             double score = (lessThanScore + greaterThanScore) / (targets.length * weightSum);
-            if (score < bestScore) {
+            if ((score + IMPURITY_EPSILON) < bestScore) {
                 bestID = i;
                 bestScore = score;
                 bestSplitValue = (feature.get(splitIdx).value + feature.get(splitIdx + 1).value) / 2.0;
@@ -294,7 +294,7 @@ public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> 
         List<AbstractTrainingNode<Regressor>> output;
         double impurityDecrease = weightSum * (getImpurity() - bestScore);
         // If we found a split better than the current impurity.
-        if ((bestID != -1) && (impurityDecrease >= leafDeterminer.getScaledMinImpurityDecrease())) {
+        if ((bestID != -1) && (impurityDecrease >= (leafDeterminer.getScaledMinImpurityDecrease() + IMPURITY_EPSILON))) {
             output = splitAtBest(featureIDs, bestID, bestSplitValue, bestLeftIndices, bestRightIndices);
         } else {
             output = Collections.emptyList();
@@ -452,15 +452,15 @@ public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> 
      * Inverts a training dataset from row major to column major. This partially de-sparsifies the dataset
      * so it's very expensive in terms of memory.
      * @param examples An input dataset.
+     * @param featureInfos The feature id mapping.
+     * @param outputInfo The output id mapping.
      * @return A list of TreeFeatures which contain {@link InvertedFeature}s.
      */
-    private static InvertedData invertData(Dataset<Regressor> examples) {
-        ImmutableFeatureMap featureInfos = examples.getFeatureIDMap();
-        ImmutableOutputInfo<Regressor> labelInfo = examples.getOutputIDInfo();
-        int numLabels = labelInfo.size();
+    private static InvertedData invertData(Dataset<Regressor> examples, ImmutableFeatureMap featureInfos, ImmutableOutputInfo<Regressor> outputInfo) {
+        int numLabels = outputInfo.size();
         int numFeatures = featureInfos.size();
         int[] indices = new int[examples.size()];
-        float[][] targets = new float[labelInfo.size()][examples.size()];
+        float[][] targets = new float[outputInfo.size()][examples.size()];
         float[] weights = new float[examples.size()];
 
         logger.fine("Building initial List<TreeFeature> for " + numFeatures + " features and " + numLabels + " outputs");
@@ -470,7 +470,7 @@ public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> 
             data.add(new TreeFeature(i));
         }
 
-        int[] ids = ((ImmutableRegressionInfo) labelInfo).getNaturalOrderToIDMapping();
+        int[] ids = ((ImmutableRegressionInfo) outputInfo).getNaturalOrderToIDMapping();
         for (int i = 0; i < examples.size(); i++) {
             Example<Regressor> e = examples.getExample(i);
             indices[i] = i;
@@ -491,12 +491,12 @@ public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> 
                 // These two checks should never occur as SparseVector deals with
                 // collisions, and Dataset prevents repeated features.
                 // They are left in just to make sure.
-                if (lastID > curID) {
-                    logger.severe("Example = " + e.toString());
-                    throw new IllegalStateException("Features aren't ordered. At id " + i + ", lastID = " + lastID + ", curID = " + curID);
-                } else if (lastID-1 == curID) {
+                if (lastID-1 == curID) {
                     logger.severe("Example = " + e.toString());
                     throw new IllegalStateException("Features are repeated. At id " + i + ", lastID = " + lastID + ", curID = " + curID);
+                } else if (lastID > curID) {
+                    logger.severe("Example = " + e.toString());
+                    throw new IllegalStateException("Features aren't ordered. At id " + i + ", lastID = " + lastID + ", curID = " + curID);
                 }
                 lastID = curID + 1;
             }
@@ -535,8 +535,4 @@ public class JointRegressorTrainingNode extends AbstractTrainingNode<Regressor> 
         }
     }
 
-    private void writeObject(java.io.ObjectOutputStream stream)
-            throws IOException {
-        throw new NotSerializableException("JointRegressorTrainingNode is a runtime class only, and should not be serialized.");
-    }
 }

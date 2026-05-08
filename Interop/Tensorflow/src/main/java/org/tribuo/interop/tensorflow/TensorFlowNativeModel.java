@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,10 +19,8 @@ package org.tribuo.interop.tensorflow;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
-import org.tensorflow.Graph;
-import org.tensorflow.Session;
 import org.tensorflow.Tensor;
-import org.tensorflow.proto.framework.GraphDef;
+import org.tensorflow.proto.GraphDef;
 import org.tribuo.ImmutableFeatureMap;
 import org.tribuo.ImmutableOutputInfo;
 import org.tribuo.Output;
@@ -30,11 +28,11 @@ import org.tribuo.Prediction;
 import org.tribuo.impl.ModelDataCarrier;
 import org.tribuo.interop.tensorflow.protos.TensorFlowNativeModelProto;
 import org.tribuo.interop.tensorflow.protos.TensorTupleProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.ModelProvenance;
 
-import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
@@ -48,12 +46,9 @@ import java.util.Map;
  * This model's serialized form stores the weights and is entirely self contained.
  * If you wish to convert it into a model which uses checkpoints then call {@link #convertToCheckpointModel}.
  * <p>
- * The model's serialVersionUID is set to the major TensorFlow version number times 100.
- * <p>
  * N.B. TensorFlow support is experimental and may change without a major version bump.
  */
 public final class TensorFlowNativeModel<T extends Output<T>> extends TensorFlowModel<T> {
-    private static final long serialVersionUID = 200L;
 
     /**
      * Protobuf serialization version.
@@ -73,20 +68,21 @@ public final class TensorFlowNativeModel<T extends Output<T>> extends TensorFlow
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"rawtypes","unchecked"}) // guarded by a getClass check that the output domain and converter are compatible
-    public static TensorFlowNativeModel<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static TensorFlowNativeModel<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         TensorFlowNativeModelProto proto = message.unpack(TensorFlowNativeModelProto.class);
 
-        OutputConverter<?> outputConverter = ProtoUtil.deserialize(proto.getOutputConverter());
-        FeatureConverter featureConverter = ProtoUtil.deserialize(proto.getFeatureConverter());
+        OutputConverter<?> outputConverter = ProtoUtil.deserialize(proto.getOutputConverter(), deserCache);
+        FeatureConverter featureConverter = ProtoUtil.deserialize(proto.getFeatureConverter(), deserCache);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(outputConverter.getTypeWitness())) {
             throw new IllegalStateException("Invalid protobuf, output domain does not match converter, found " + carrier.outputDomain().getClass() + " and " + outputConverter.getTypeWitness());
         }
@@ -122,6 +118,9 @@ public final class TensorFlowNativeModel<T extends Output<T>> extends TensorFlow
 
     @Override
     public ModelProto serialize() {
+        if (closed) {
+            throw new IllegalStateException("Can't serialize a closed model, the state has gone.");
+        }
         ModelDataCarrier<T> carrier = createDataCarrier();
         Map<String, TensorTupleProto> tensors = new HashMap<>();
         for (Map.Entry<String, TensorFlowUtil.TensorTuple> e : TensorFlowUtil.extractMarshalledVariables(modelGraph, session).entrySet()) {
@@ -145,25 +144,4 @@ public final class TensorFlowNativeModel<T extends Output<T>> extends TensorFlow
         return builder.build();
     }
 
-    private void writeObject(java.io.ObjectOutputStream out) throws IOException {
-        if (closed) {
-            throw new IllegalStateException("Can't serialize a closed model, the state has gone.");
-        }
-        out.defaultWriteObject();
-        byte[] modelBytes = modelGraph.toGraphDef().toByteArray();
-        out.writeObject(modelBytes);
-        Map<String, TensorFlowUtil.TensorTuple> tensorMap = TensorFlowUtil.extractMarshalledVariables(modelGraph, session);
-        out.writeObject(tensorMap);
-    }
-
-    @SuppressWarnings("unchecked") //deserialising a typed map
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        byte[] modelBytes = (byte[]) in.readObject();
-        Map<String, TensorFlowUtil.TensorTuple> tensorMap = (Map<String, TensorFlowUtil.TensorTuple>) in.readObject();
-        modelGraph = new Graph();
-        modelGraph.importGraphDef(GraphDef.parseFrom(modelBytes));
-        session = new Session(modelGraph);
-        TensorFlowUtil.restoreMarshalledVariables(session,tensorMap);
-    }
 }

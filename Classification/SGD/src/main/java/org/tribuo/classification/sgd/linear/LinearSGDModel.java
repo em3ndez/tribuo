@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,11 +32,11 @@ import org.tribuo.math.Parameters;
 import org.tribuo.math.la.DenseMatrix;
 import org.tribuo.math.la.DenseVector;
 import org.tribuo.math.util.VectorNormalizer;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.ModelProvenance;
 import org.tribuo.util.onnx.ONNXNode;
 
-import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -51,7 +51,6 @@ import java.util.Map;
  * </pre>
  */
 public class LinearSGDModel extends AbstractLinearSGDModel<Label> implements ONNXExportable {
-    private static final long serialVersionUID = 2L;
 
     /**
      * Protobuf serialization version.
@@ -59,11 +58,6 @@ public class LinearSGDModel extends AbstractLinearSGDModel<Label> implements ONN
     public static final int CURRENT_VERSION = 0;
 
     private final VectorNormalizer normalizer;
-
-    // Unused as the weights now live in AbstractSGDModel
-    // It remains for serialization compatibility with Tribuo 4.0
-    @Deprecated
-    private DenseMatrix weights = null;
 
     /**
      * Constructs a linear classification model trained via SGD.
@@ -87,16 +81,17 @@ public class LinearSGDModel extends AbstractLinearSGDModel<Label> implements ONN
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static LinearSGDModel deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static LinearSGDModel deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         ClassificationLinearSGDProto proto = message.unpack(ClassificationLinearSGDProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata() ,deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(Label.class)) {
             throw new IllegalStateException("Invalid protobuf, output domain is not a label domain, found " + carrier.outputDomain().getClass());
         }
@@ -108,7 +103,7 @@ public class LinearSGDModel extends AbstractLinearSGDModel<Label> implements ONN
             throw new IllegalStateException("Invalid protobuf, parameters must be LinearParameters, found " + params.getClass());
         }
 
-        VectorNormalizer normalizer = VectorNormalizer.deserialize(proto.getNormalizer());
+        VectorNormalizer normalizer = VectorNormalizer.deserialize(proto.getNormalizer(), deserCache);
 
         return new LinearSGDModel(carrier.name(),carrier.provenance(),carrier.featureDomain(),outputDomain,(LinearParameters) params, normalizer, carrier.generatesProbabilities());
     }
@@ -171,14 +166,4 @@ public class LinearSGDModel extends AbstractLinearSGDModel<Label> implements ONN
         return "Classification-LinearSGDModel";
     }
 
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-
-        // Bounce old 4.0 style models into the new 4.1 style models
-        if (weights != null && modelParameters == null) {
-            modelParameters = new LinearParameters(weights);
-            weights = null;
-            addBias = true;
-        }
-    }
 }

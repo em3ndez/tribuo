@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 package org.tribuo.common.tree;
 
 import org.tribuo.Output;
-import org.tribuo.math.la.SparseVector;
+import org.tribuo.math.la.SGDVector;
 
 import java.util.List;
 import java.util.SplittableRandom;
@@ -31,6 +31,11 @@ public abstract class AbstractTrainingNode<T extends Output<T>> implements Node<
      * Default buffer size used in the split operation.
      */
     protected static final int DEFAULT_SIZE = 16;
+
+    /**
+     * Epsilon value for floating point impurity comparisons
+     */
+    protected static final double IMPURITY_EPSILON = 1e-12;
 
     protected final int depth;
 
@@ -99,7 +104,7 @@ public abstract class AbstractTrainingNode<T extends Output<T>> implements Node<
      * @return Whether the new node should be a {@link LeafNode}.
      */
     public boolean shouldMakeLeaf(double impurityScore, float weightSum) {
-        return ((impurityScore == 0.0) ||
+        return ((Math.abs(impurityScore) < 1e-15) ||
                 (depth + 1 >= leafDeterminer.getMaxDepth()) ||
                 (weightSum < leafDeterminer.getMinChildWeight()));
     }
@@ -126,7 +131,7 @@ public abstract class AbstractTrainingNode<T extends Output<T>> implements Node<
     }
 
     @Override
-    public Node<T> getNextNode(SparseVector example) {
+    public Node<T> getNextNode(SGDVector example) {
         if (split) {
             double feature = example.get(splitID);
             if (feature > splitValue) {

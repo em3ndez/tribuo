@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,8 +35,8 @@ import org.tensorflow.ndarray.Shape;
 import org.tensorflow.op.Op;
 import org.tensorflow.op.Ops;
 import org.tensorflow.op.core.Placeholder;
-import org.tensorflow.proto.framework.ConfigProto;
-import org.tensorflow.proto.framework.GraphDef;
+import org.tensorflow.proto.ConfigProto;
+import org.tensorflow.proto.GraphDef;
 import org.tensorflow.types.TFloat32;
 import org.tensorflow.types.family.TNumber;
 import org.tribuo.Dataset;
@@ -487,7 +487,7 @@ public final class TensorFlowTrainer<T extends Output<T>> implements Trainer<T> 
             Operand<TNumber> lossOp = outputConverter.loss().apply(tf,new Pair<>(targetPlaceholder,intermediateOutputOp));
             Op optimiser = optimiserEnum.applyOptimiser(graph,lossOp,gradientParams);
 
-            // Initalise all the things
+            // Initialise all the things
             session.initialize();
 
             logger.info("Initialised the model parameters");

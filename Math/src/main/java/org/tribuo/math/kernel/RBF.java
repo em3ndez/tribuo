@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,10 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.oracle.labs.mlrg.olcut.config.Config;
 import com.oracle.labs.mlrg.olcut.provenance.ConfiguredObjectProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.impl.ConfiguredObjectProvenanceImpl;
-import org.tribuo.math.la.SparseVector;
+import org.tribuo.math.la.SGDVector;
 import org.tribuo.math.protos.KernelProto;
 import org.tribuo.math.protos.RBFKernelProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializableClass;
 import org.tribuo.protos.ProtoSerializableField;
 import org.tribuo.protos.ProtoUtil;
@@ -35,7 +36,6 @@ import java.util.Objects;
  */
 @ProtoSerializableClass(version = RBF.CURRENT_VERSION, serializedDataClass = RBFKernelProto.class)
 public class RBF implements Kernel {
-    private static final long serialVersionUID = 1L;
 
     /**
      * Protobuf serialization version.
@@ -64,10 +64,11 @@ public class RBF implements Kernel {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static RBF deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static RBF deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -81,7 +82,7 @@ public class RBF implements Kernel {
     }
 
     @Override
-    public double similarity(SparseVector a, SparseVector b) {
+    public double similarity(SGDVector a, SGDVector b) {
         return Math.exp(-gamma * Math.pow(a.subtract(b).twoNorm(),2.0));
     }
 

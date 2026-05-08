@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import org.tribuo.Feature;
 import org.tribuo.FeatureMap;
 import org.tribuo.Output;
 import org.tribuo.VariableInfo;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ExampleDataProto;
 import org.tribuo.protos.core.ExampleProto;
@@ -49,7 +50,6 @@ import java.util.logging.Logger;
  * An {@link Example} backed by two arrays, one of String and one of double.
  */
 public class ArrayExample<T extends Output<T>> extends Example<T> {
-    private static final long serialVersionUID = 1L;
 
     private static final Logger logger = Logger.getLogger(ArrayExample.class.getName());
 
@@ -156,6 +156,26 @@ public class ArrayExample<T extends Output<T>> extends Example<T> {
     }
 
     /**
+     * Constructs an example from an output, an array of names and an array of values.
+     * @param output The output.
+     * @param names The feature names.
+     * @param values The feature values.
+     * @param metadata The example metadata.
+     */
+    public ArrayExample(T output, String[] names, double[] values, Map<String, Object> metadata) {
+        super(output, metadata);
+        if (names.length != values.length) {
+            throw new IllegalArgumentException("names.length != values.length, names = " + names.length + ", values = " + values.length);
+        }
+
+        size = names.length;
+        featureNames = Arrays.copyOf(names,names.length);
+        featureValues = Arrays.copyOf(values,values.length);
+
+        sort();
+    }
+
+    /**
      * Constructs an example from an output and a list of features.
      * @param output The output.
      * @param features The list of features.
@@ -239,11 +259,12 @@ public class ArrayExample<T extends Output<T>> extends Example<T> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"rawtypes","unchecked"})
-    public static ArrayExample<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ArrayExample<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -251,7 +272,7 @@ public class ArrayExample<T extends Output<T>> extends Example<T> {
         if (proto.getFeatureNameCount() != proto.getFeatureValueCount()) {
             throw new IllegalStateException("Invalid protobuf, different numbers of feature names and values, found " + proto.getFeatureNameCount() + " names and " + proto.getFeatureValueCount() + " values.");
         }
-        Output<?> output = ProtoUtil.deserialize(proto.getOutput());
+        Output<?> output = ProtoUtil.deserialize(proto.getOutput(), deserCache);
         String[] featureNames = new String[proto.getFeatureNameCount()];
         double[] featureValues = new double[proto.getFeatureValueCount()];
         for (int i = 0; i < proto.getFeatureNameCount(); i++) {
@@ -528,34 +549,51 @@ public class ArrayExample<T extends Output<T>> extends Example<T> {
         }
     }
 
+    /**
+     * Adds zero valued features for each feature name in {@code featureList}.
+     * <p>
+     * {@code featureList} must be sorted lexicographically using the {@link String}
+     * comparator, and behaviour is undefined otherwise.
+     * @param featureList A *sorted* list of feature names.
+     */
     @Override
     public void densify(List<String> featureList) {
-        // Ensure we have enough space.
-        if (featureList.size() > featureNames.length) {
-            growArray(featureList.size());
-        }
-        int insertedCount = 0;
-        int curPos = 0;
-        for (String curName : featureList) {
-            // If we've reached the end of our old feature set, just insert.
-            if (curPos == size) {
-                featureNames[size + insertedCount] = curName;
-                insertedCount++;
+        int featureListSize = featureList.size();
+        List<String> insertionList = new ArrayList<>();
+
+        int thisIdx = 0;
+        int otherIdx = 0;
+        // Walk down both lists, checking the feature comparators
+        while (thisIdx < size && otherIdx < featureListSize) {
+            String curName = featureList.get(otherIdx);
+            int comp = curName.compareTo(featureNames[thisIdx]);
+            // String not present in featureNames, step featureList
+            if (comp < 0) {
+                insertionList.add(curName);
+                otherIdx++;
+            } else if (comp == 0) {
+                // Found feature, step both
+                thisIdx++;
+                otherIdx++;
             } else {
-                // Check to see if our insertion candidate is the same as the current feature name.
-                int comparison = curName.compareTo(featureNames[curPos]);
-                if (comparison < 0) {
-                    // If it's earlier, insert it.
-                    featureNames[size + insertedCount] = curName;
-                    insertedCount++;
-                } else if (comparison == 0) {
-                    // Otherwise just bump our pointer, we've already got this feature.
-                    curPos++;
-                }
+                // featureList is past this, step this
+                thisIdx++;
             }
         }
-        // Bump the size up by the number of inserted features.
-        size += insertedCount;
+        // Insert any remaining features from the list
+        for (; otherIdx < featureListSize; otherIdx++) {
+            insertionList.add(featureList.get(otherIdx));
+        }
+        // Check capacity and grow array
+        int capacityCheck = insertionList.size() + size;
+        if (capacityCheck > featureNames.length) {
+            growArray(capacityCheck);
+        }
+        // Insert new features
+        for (String s : insertionList) {
+            featureNames[size] = s;
+            size++;
+        }
         // Sort the features
         sort();
     }

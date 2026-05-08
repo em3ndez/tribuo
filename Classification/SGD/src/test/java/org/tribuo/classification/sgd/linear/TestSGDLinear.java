@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,10 @@ package org.tribuo.classification.sgd.linear;
 
 import ai.onnxruntime.OrtException;
 import com.oracle.labs.mlrg.olcut.util.Pair;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.tribuo.Dataset;
 import org.tribuo.Example;
 import org.tribuo.Model;
+import org.tribuo.Prediction;
 import org.tribuo.Trainer;
 import org.tribuo.classification.Label;
 import org.tribuo.classification.evaluation.LabelEvaluation;
@@ -38,12 +37,15 @@ import org.tribuo.math.optimisers.AdaGrad;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.test.Helpers;
 
 import java.io.IOException;
-import java.io.ObjectInputStream;
+import java.io.InputStream;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
@@ -52,7 +54,7 @@ import java.util.logging.Logger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestSGDLinear {
     private static final Logger logger = Logger.getLogger(TestSGDLinear.class.getName());
@@ -113,7 +115,6 @@ public class TestSGDLinear {
     public void testDenseData() {
         Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.denseTrainTest();
         Model<Label> model = testSGDLinear(p);
-        Helpers.testModelSerialization(model,Label.class);
         Helpers.testModelProtoSerialization(model, Label.class, p.getB());
     }
 
@@ -147,25 +148,37 @@ public class TestSGDLinear {
         });
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"label-linear-sgd-4.0.2.model"})
-    public void testSerializedModel(String resourceName) throws IOException, ClassNotFoundException {
-        try (ObjectInputStream ois = new ObjectInputStream(TestSGDLinear.class.getResource(resourceName).openStream())) {
-           Model<?> model = (Model<?>) ois.readObject();
-           if (model.validate(Label.class)) {
-               @SuppressWarnings("unchecked") // Guarded by validate call.
-               Model<Label> m = (Model<Label>) model;
-               LabelEvaluator e = new LabelEvaluator();
-               LabelEvaluation evaluation = e.evaluate(m,LabelledDataGenerator.denseTrainTest().getB());
-               Map<String, List<Pair<String,Double>>> features = m.getTopFeatures(3);
-               Assertions.assertNotNull(features);
-               assertFalse(features.isEmpty());
-               features = m.getTopFeatures(-1);
-               Assertions.assertNotNull(features);
-               assertFalse(features.isEmpty());
-           } else {
-               fail("Invalid model type found, expected Label");
-           }
+    @Test
+    public void loadProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(TestSGDLinear.class.getResource("lin-clf-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
+            @SuppressWarnings("unchecked")
+            Model<Label> deserModel = (Model<Label>) Model.deserialize(proto);
+
+            assertEquals("4.3.1", deserModel.getProvenance().getTribuoVersion());
+
+            Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.denseTrainTest();
+
+            List<Prediction<Label>> deserOutput = deserModel.predict(p.getB());
+
+            LinearSGDTrainer trainer = new LinearSGDTrainer(new LogMulticlass(), new AdaGrad(1.0,0.1),10,1000, 1L);
+            Model<Label> model = trainer.train(p.getA());
+            List<Prediction<Label>> output = model.predict(p.getB());
+
+            assertEquals(deserOutput.size(), p.getB().size());
+            assertTrue(Helpers.predictionListDistributionEquals(deserOutput, output, 1e-7));
         }
+    }
+
+    /**
+     * Test protobuf generation method.
+     * @throws IOException If the write failed.
+     */
+    public void generateModel() throws IOException {
+        Pair<Dataset<Label>, Dataset<Label>> p = LabelledDataGenerator.denseTrainTest();
+        LinearSGDTrainer trainer = new LinearSGDTrainer(new LogMulticlass(), new AdaGrad(1.0,0.1),10,1000, 1L);
+        Model<Label> model = trainer.train(p.getA());
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","classification","sgd","linear","lin-clf-431.tribuo"));
     }
 }

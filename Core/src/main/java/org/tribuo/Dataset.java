@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import com.oracle.labs.mlrg.olcut.provenance.ObjectProvenance;
 import com.oracle.labs.mlrg.olcut.provenance.Provenancable;
 import com.oracle.labs.mlrg.olcut.util.MutableLong;
 import org.tribuo.impl.DatasetDataCarrier;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializable;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.DatasetProto;
@@ -38,7 +39,6 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -64,15 +64,14 @@ import java.util.regex.Pattern;
  * @param <T> the type of the features in the data set.
  */
 public abstract class Dataset<T extends Output<T>> implements Iterable<Example<T>>, ProtoSerializable<DatasetProto>,
-    Provenancable<DatasetProvenance>, Serializable {
-    private static final long serialVersionUID = 2L;
+    Provenancable<DatasetProvenance> {
 
     private static final Logger logger = Logger.getLogger(Dataset.class.getName());
 
     /**
      * Users of this RNG should synchronize on the Dataset to prevent replicability issues.
      */
-    private static final SplittableRandom rng = new SplittableRandom(Trainer.DEFAULT_SEED);
+    protected static final SplittableRandom rng = new SplittableRandom(Trainer.DEFAULT_SEED);
 
     /**
      * The data in this data set.
@@ -134,7 +133,17 @@ public abstract class Dataset<T extends Output<T>> implements Iterable<Example<T
      * @return The dataset.
      */
     public static Dataset<?> deserialize(DatasetProto datasetProto) {
-        return ProtoUtil.deserialize(datasetProto);
+        return deserialize(datasetProto, new ProtoDeserializationCache());
+    }
+
+    /**
+     * Deserializes a dataset proto into a dataset.
+     * @param datasetProto The proto to deserialize.
+     * @param deserCache The deserialization cache.
+     * @return The dataset.
+     */
+    public static Dataset<?> deserialize(DatasetProto datasetProto, ProtoDeserializationCache deserCache) {
+        return ProtoUtil.deserialize(datasetProto, deserCache);
     }
 
     /**
@@ -203,11 +212,8 @@ public abstract class Dataset<T extends Output<T>> implements Iterable<Example<T
      * Gets the examples as an unmodifiable list. This list will throw an UnsupportedOperationException if any elements
      * are added to it.
      * <p>
-     * In other words, using the following to add additional examples to this dataset with throw an exception:
-     *
-     * {@code dataset.getData().add(example)}
-     *
-     * Instead, use {@link MutableDataset#add(Example)}.
+     * In other words, using the following to add additional examples to this dataset will throw an exception:
+     * {@code dataset.getData().add(example)}. Instead, use {@link MutableDataset#add(Example)}.
      *
      * @return The unmodifiable example list.
      */
@@ -395,7 +401,7 @@ public abstract class Dataset<T extends Output<T>> implements Iterable<Example<T
             }
             // Add the queue to the map for that feature
             featureStats.put(entry.getKey(),l);
-            sparseCount.put(entry.getKey(), new MutableLong(data.size()));
+            sparseCount.put(entry.getKey(), new MutableLong(size()));
         }
         if (!transformations.getGlobalTransformations().isEmpty()) {
             // Append all the global transformations
@@ -411,7 +417,7 @@ public abstract class Dataset<T extends Output<T>> implements Iterable<Example<T
                 // Add the queue to the map for that feature
                 featureStats.put(v, l);
                 // Generate the sparse count initialised to the number of features.
-                sparseCount.putIfAbsent(v, new MutableLong(data.size()));
+                sparseCount.putIfAbsent(v, new MutableLong(size()));
                 ndone++;
                 if(logger.isLoggable(Level.FINE) && ndone % 10000 == 0) {
                     logger.fine(String.format("Completed %,d of %,d global transformations", ndone, ntransform));
@@ -424,7 +430,7 @@ public abstract class Dataset<T extends Output<T>> implements Iterable<Example<T
         boolean initialisedSparseCounts = false;
         // Iterate through the dataset max(transformations.length) times.
         while (!featureStats.isEmpty()) {
-            for (Example<T> example : data) {
+            for (Example<T> example : this) {
                 for (Feature f : example) {
                     if (featureStats.containsKey(f.getName())) {
                         if (!initialisedSparseCounts) {
@@ -557,12 +563,13 @@ public abstract class Dataset<T extends Output<T>> implements Iterable<Example<T
      * @param examplesList The protos.
      * @param outputClass The output class.
      * @param fmap The feature domain.
+     * @param deserCache The deserialization cache.
      * @return The list of deserialized examples.
      */
-    protected static List<Example<?>> deserializeExamples(List<ExampleProto> examplesList, Class<?> outputClass, FeatureMap fmap) {
+    protected static List<Example<?>> deserializeExamples(List<ExampleProto> examplesList, Class<?> outputClass, FeatureMap fmap, ProtoDeserializationCache deserCache) {
         List<Example<?>> examples = new ArrayList<>();
         for (ExampleProto e : examplesList) {
-            Example<?> example = Example.deserialize(e);
+            Example<?> example = Example.deserialize(e, deserCache);
             if (example.getOutput().getClass().equals(outputClass)) {
                 for (Feature f : example) {
                    if (fmap.get(f.getName()) == null) {

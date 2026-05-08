@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,7 +33,9 @@ import org.tribuo.classification.Label;
 import org.tribuo.interop.onnx.protos.MultiLabelTransformerProto;
 import org.tribuo.interop.onnx.protos.OutputTransformerProto;
 import org.tribuo.multilabel.MultiLabel;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializableClass;
+import org.tribuo.protos.ProtoSerializableField;
 import org.tribuo.protos.ProtoUtil;
 
 import java.util.ArrayList;
@@ -57,7 +59,6 @@ import java.util.logging.Logger;
  */
 @ProtoSerializableClass(serializedDataClass = MultiLabelTransformerProto.class, version = MultiLabelTransformer.CURRENT_VERSION)
 public class MultiLabelTransformer implements OutputTransformer<MultiLabel> {
-    private static final long serialVersionUID = 1L;
     private static final Logger logger = Logger.getLogger(MultiLabelTransformer.class.getName());
 
     /**
@@ -71,9 +72,11 @@ public class MultiLabelTransformer implements OutputTransformer<MultiLabel> {
     public static final double DEFAULT_THRESHOLD = 0.5;
 
     @Config(description = "The threshold for determining if a label is present.")
+    @ProtoSerializableField
     private double threshold = DEFAULT_THRESHOLD;
 
     @Config(description = "Does this transformer produce probabilistic outputs.")
+    @ProtoSerializableField
     private boolean generatesProbabilities = true;
 
     /**
@@ -110,10 +113,11 @@ public class MultiLabelTransformer implements OutputTransformer<MultiLabel> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static MultiLabelTransformer deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static MultiLabelTransformer deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }

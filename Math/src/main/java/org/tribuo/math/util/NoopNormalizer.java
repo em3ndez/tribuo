@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,16 +19,15 @@ package org.tribuo.math.util;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import org.tribuo.math.protos.NormalizerProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.util.onnx.ONNXNode;
 
-import java.io.Serializable;
 import java.util.Arrays;
 
 /**
  * NoopNormalizer returns a copy in {@link NoopNormalizer#normalize} and is a no-op in place.
  */
-public class NoopNormalizer implements VectorNormalizer, Serializable {
-    private static final long serialVersionUID = 1L;
+public class NoopNormalizer implements VectorNormalizer {
 
     /**
      * Protobuf serialization version.
@@ -45,9 +44,10 @@ public class NoopNormalizer implements VectorNormalizer, Serializable {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @return The deserialized object.
      */
-    public static NoopNormalizer deserializeFromProto(int version, String className, Any message) {
+    public static NoopNormalizer deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }

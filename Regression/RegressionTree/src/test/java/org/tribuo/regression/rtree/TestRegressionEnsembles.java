@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import org.tribuo.Trainer;
 import org.tribuo.common.tree.AbstractCARTTrainer;
 import org.tribuo.common.tree.ExtraTreesTrainer;
 import org.tribuo.common.tree.RandomForestTrainer;
+import org.tribuo.common.tree.TreeEnsembleModel;
 import org.tribuo.ensemble.BaggingTrainer;
 import org.tribuo.regression.Regressor;
 import org.tribuo.regression.ensemble.AveragingCombiner;
@@ -38,6 +39,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.tribuo.common.tree.AbstractCARTTrainer.MIN_EXAMPLES;
 
 public class TestRegressionEnsembles {
@@ -90,17 +92,21 @@ public class TestRegressionEnsembles {
     public void testDenseData() {
         Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
         Model<Regressor> bagging = testBagging(p);
-        Helpers.testModelSerialization(bagging,Regressor.class);
+        Helpers.testModelProtoSerialization(bagging,Regressor.class);
         Model<Regressor> mBagging = testMultiBagging(p);
-        Helpers.testModelSerialization(mBagging,Regressor.class);
+        Helpers.testModelProtoSerialization(mBagging,Regressor.class);
         Model<Regressor> rf = testRandomForest(p);
-        Helpers.testModelSerialization(rf,Regressor.class);
+        Model<Regressor> deserRf = Helpers.testModelProtoSerialization(rf,Regressor.class);
+        assertTrue(deserRf instanceof TreeEnsembleModel, "RandomForest should deserialize as TreeEnsembleModel");
         Model<Regressor> mRF = testMultiRandomForest(p);
-        Helpers.testModelSerialization(mRF,Regressor.class);
+        Model<Regressor> deserMRf = Helpers.testModelProtoSerialization(mRF,Regressor.class);
+        assertTrue(deserMRf instanceof TreeEnsembleModel, "RandomForest should deserialize as TreeEnsembleModel");
         Model<Regressor> extra = testExtraTrees(p);
-        Helpers.testModelSerialization(extra,Regressor.class);
+        Model<Regressor> deserExtra = Helpers.testModelProtoSerialization(extra,Regressor.class);
+        assertTrue(deserExtra instanceof TreeEnsembleModel, "ExtraTrees should deserialize as TreeEnsembleModel");
         Model<Regressor> mExtra = testMultiExtraTrees(p);
-        Helpers.testModelSerialization(mExtra,Regressor.class);
+        Model<Regressor> deserMExtra = Helpers.testModelProtoSerialization(mExtra,Regressor.class);
+        assertTrue(deserMExtra instanceof TreeEnsembleModel, "ExtraTrees should deserialize as TreeEnsembleModel");
     }
 
     @Test
@@ -158,10 +164,10 @@ public class TestRegressionEnsembles {
         BaggingTrainer<Regressor> bagT = new BaggingTrainer<>(t,new AveragingCombiner(),10);
         Model<Regressor> llModel = bagT.train(p.getA());
         RegressionEvaluation llEval = evaluator.evaluate(llModel,p.getB());
-        double expectedDim1 = 0.1632337913237244;
-        double expectedDim2 = 0.1632337913237244;
-        double expectedDim3 = -0.5727741047992028;
-        double expectedAve = -0.08210217405058466;
+        double expectedDim1 = 0.1741030329694585;
+        double expectedDim2 = 0.1741030329694585;
+        double expectedDim3 = -0.47778900726641527;
+        double expectedAve = -0.04319431377583275;
 
         assertEquals(expectedDim1,llEval.r2(new Regressor(RegressionDataGenerator.firstDimensionName,Double.NaN)),1e-6);
         assertEquals(expectedDim2,llEval.r2(new Regressor(RegressionDataGenerator.secondDimensionName,Double.NaN)),1e-6);

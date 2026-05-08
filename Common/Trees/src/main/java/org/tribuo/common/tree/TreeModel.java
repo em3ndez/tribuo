@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,7 +32,8 @@ import org.tribuo.common.tree.protos.SplitNodeProto;
 import org.tribuo.common.tree.protos.TreeModelProto;
 import org.tribuo.common.tree.protos.TreeNodeProto;
 import org.tribuo.impl.ModelDataCarrier;
-import org.tribuo.math.la.SparseVector;
+import org.tribuo.math.la.SGDVector;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.ModelProvenance;
 
@@ -56,7 +57,6 @@ import java.util.Set;
  * A {@link Model} wrapped around a decision tree root {@link Node}.
  */
 public class TreeModel<T extends Output<T>> extends SparseModel<T> {
-    private static final long serialVersionUID = 3L;
 
     /**
      * Protobuf serialization version.
@@ -103,17 +103,18 @@ public class TreeModel<T extends Output<T>> extends SparseModel<T> {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"unchecked","rawtypes"}) // guarded by getClass to ensure all the output types are the same.
-    public static TreeModel<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static TreeModel<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         TreeModelProto proto = message.unpack(TreeModelProto.class);
 
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         Class<?> outputClass = carrier.outputDomain().getOutput(0).getClass();
 
         if (proto.getNodesCount() == 0) {
@@ -152,7 +153,7 @@ public class TreeModel<T extends Output<T>> extends SparseModel<T> {
      * once they can be built because both children have been created and provided to the builder.
      * <p>
      * This approach should traverse the entire tree in the correct order but we check at the end of the method
-     * that everything looks good.  
+     * that everything looks good.
      * @param nodeProtos The node protos to deserialize.
      * @param outputClass The output type.
      * @param <U> The output type of the nodes.
@@ -313,10 +314,49 @@ public class TreeModel<T extends Output<T>> extends SparseModel<T> {
     public Prediction<T> predict(Example<T> example) {
         //
         // Ensures we handle collisions correctly
-        SparseVector vec = SparseVector.createSparseVector(example,featureIDMap,false);
-        if (vec.numActiveElements() == 0) {
+        SGDVector vec = SGDVector.createFromExample(example, featureIDMap, false);
+        return predict(vec, example);
+    }
+
+    /**
+     * Makes a prediction using a pre-computed vector.
+     * <p>
+     * This method is useful for ensemble models where the same example needs to be
+     * predicted by multiple trees. Creating the vector once and reusing it
+     * across all trees avoids redundant vector creation overhead.
+     * </p>
+     * <p>
+     * <b>Note:</b> This method is intended for internal use by ensemble models
+     * (e.g., {@link TreeEnsembleModel}) and should generally not be called directly
+     * in user code. Use {@link #predict(Example)} instead for standard predictions.
+     * </p>
+     * <p>
+     * This method validates that:
+     * </p>
+     * <ul>
+     *   <li>The vector contains at least one active element</li>
+     *   <li>The vector size matches the feature map size</li>
+     * </ul>
+     * <p>
+     * These validations ensure that the vector was created using the same
+     * feature map as this model.
+     * </p>
+     *
+     * @param vec The vector representation of the example.
+     * @param example The original example (used for metadata in the prediction).
+     * @return The prediction for this example.
+     * @throws IllegalArgumentException If validation fails.
+     */
+    public Prediction<T> predict(SGDVector vec, Example<T> example) {
+        if (vec.numNonZeroElements() == 0) {
             throw new IllegalArgumentException("No features found in Example " + example.toString());
         }
+        if (vec.size() != featureIDMap.size()) {
+            throw new IllegalArgumentException("Vector size (" + vec.size() +
+                ") does not match feature map size (" + featureIDMap.size() +
+                "). The vector must be created from the same feature map as this model.");
+        }
+
         Node<T> oldNode = root;
         Node<T> curNode = root;
 
@@ -327,7 +367,7 @@ public class TreeModel<T extends Output<T>> extends SparseModel<T> {
 
         //
         // oldNode must be a LeafNode.
-        return ((LeafNode<T>) oldNode).getPrediction(vec.numActiveElements(),example);
+        return ((LeafNode<T>) oldNode).getPrediction(vec.numNonZeroElements(),example);
     }
 
     @Override
@@ -363,7 +403,7 @@ public class TreeModel<T extends Output<T>> extends SparseModel<T> {
             }
         }
         List<Pair<String,Double>> list = new ArrayList<>();
-        while (q.size() > 0) {
+        while (!q.isEmpty()) {
             list.add(q.poll());
         }
         Collections.reverse(list);
@@ -379,7 +419,7 @@ public class TreeModel<T extends Output<T>> extends SparseModel<T> {
         List<String> list = new ArrayList<>();
         //
         // Ensures we handle collisions correctly
-        SparseVector vec = SparseVector.createSparseVector(example,featureIDMap,false);
+        SGDVector vec = SGDVector.createFromExample(example, featureIDMap, false);
         Node<T> oldNode = root;
         Node<T> curNode = root;
 
@@ -394,7 +434,7 @@ public class TreeModel<T extends Output<T>> extends SparseModel<T> {
 
         //
         // oldNode must be a LeafNode.
-        Prediction<T> pred = ((LeafNode<T>) oldNode).getPrediction(vec.numActiveElements(),example);
+        Prediction<T> pred = ((LeafNode<T>) oldNode).getPrediction(vec.numNonZeroElements(),example);
 
         List<Pair<String,Double>> pairs = new ArrayList<>();
         int i = list.size() + 1;

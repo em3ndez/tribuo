@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,9 +22,9 @@ import com.oracle.labs.mlrg.olcut.util.MutableLong;
 import com.oracle.labs.mlrg.olcut.util.Pair;
 import org.tribuo.ImmutableOutputInfo;
 import org.tribuo.multilabel.protos.ImmutableMultiLabelInfoProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.OutputDomainProto;
 
-import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -41,13 +41,11 @@ import java.util.logging.Logger;
 public class ImmutableMultiLabelInfo extends MultiLabelInfo implements ImmutableOutputInfo<MultiLabel> {
     private static final Logger logger = Logger.getLogger(ImmutableMultiLabelInfo.class.getName());
 
-    private static final long serialVersionUID = 1L;
-
     private final Map<Integer,String> idLabelMap;
 
     private final Map<String,Integer> labelIDMap;
 
-    private transient Set<MultiLabel> domain;
+    private final Set<MultiLabel> domain;
 
     private ImmutableMultiLabelInfo(ImmutableMultiLabelInfo info) {
         super(info);
@@ -119,10 +117,11 @@ public class ImmutableMultiLabelInfo extends MultiLabelInfo implements Immutable
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static ImmutableMultiLabelInfo deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ImmutableMultiLabelInfo deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > 0) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + 0);
         }
@@ -301,8 +300,4 @@ public class ImmutableMultiLabelInfo extends MultiLabelInfo implements Immutable
         }
     }
 
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        domain = Collections.unmodifiableSet(new HashSet<>(labels.values()));
-    }
 }

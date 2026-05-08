@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,13 +22,13 @@ import com.oracle.labs.mlrg.olcut.provenance.ListProvenance;
 import org.tribuo.hash.HashedFeatureMap;
 import org.tribuo.hash.Hasher;
 import org.tribuo.impl.DatasetDataCarrier;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.DatasetProto;
 import org.tribuo.protos.core.ImmutableDatasetProto;
 import org.tribuo.provenance.DataProvenance;
 import org.tribuo.provenance.DatasetProvenance;
 import org.tribuo.util.Merger;
 
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -42,8 +42,7 @@ import java.util.logging.Logger;
  * This class is mostly for performance optimisations inside the framework, and should not
  * generally be used by external code.
  */
-public class ImmutableDataset<T extends Output<T>> extends Dataset<T> implements Serializable {
-    private static final long serialVersionUID = 1L;
+public class ImmutableDataset<T extends Output<T>> extends Dataset<T> {
 
     private static final Logger logger = Logger.getLogger(ImmutableDataset.class.getName());
 
@@ -179,19 +178,20 @@ public class ImmutableDataset<T extends Output<T>> extends Dataset<T> implements
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"unchecked","rawtypes"}) // guarded & checked by getClass checks.
-    public static ImmutableDataset<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ImmutableDataset<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         ImmutableDatasetProto proto = message.unpack(ImmutableDatasetProto.class);
-        DatasetDataCarrier<?> carrier = DatasetDataCarrier.deserialize(proto.getMetadata());
+        DatasetDataCarrier<?> carrier = DatasetDataCarrier.deserialize(proto.getMetadata(), deserCache);
         Class<?> outputClass = carrier.outputFactory().getUnknownOutput().getClass();
         FeatureMap fmap = carrier.featureDomain();
-        List<Example<?>> examples = deserializeExamples(proto.getExamplesList(), outputClass, fmap);
+        List<Example<?>> examples = deserializeExamples(proto.getExamplesList(), outputClass, fmap, deserCache);
         if (!(fmap instanceof ImmutableFeatureMap)) {
             throw new IllegalStateException("Invalid protobuf, feature map was not immutable");
         }

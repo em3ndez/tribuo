@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,29 +20,57 @@ import com.oracle.labs.mlrg.olcut.util.Pair;
 import org.tribuo.Dataset;
 import org.tribuo.Example;
 import org.tribuo.Model;
+import org.tribuo.Prediction;
+import org.tribuo.SparseModel;
 import org.tribuo.Trainer;
 import org.tribuo.classification.Label;
+import org.tribuo.classification.LabelFactory;
+import org.tribuo.classification.dtree.impurity.Entropy;
 import org.tribuo.classification.dtree.impurity.GiniIndex;
 import org.tribuo.classification.evaluation.LabelEvaluation;
 import org.tribuo.classification.evaluation.LabelEvaluator;
 import org.tribuo.classification.example.LabelledDataGenerator;
+import org.tribuo.common.tree.Node;
 import org.tribuo.common.tree.TreeModel;
+import org.tribuo.data.csv.CSVLoader;
 import org.tribuo.dataset.DatasetView;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.test.Helpers;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestCART {
+    private static final Path TEST_PURE_LEAF_PATH;
+    static {
+        URL input = null;
+        try {
+            input = TestCART.class.getResource("/pure_leaf_data.csv");
+            TEST_PURE_LEAF_PATH = Paths.get(input.toURI());
+        } catch (URISyntaxException e) {
+            throw new IllegalStateException("Invalid URL to test resource " + input);
+        }
+    }
 
+    private static final GiniIndex GINI = new GiniIndex();
+    private static final Entropy ENTROPY = new Entropy();
     private static final CARTClassificationTrainer t = new CARTClassificationTrainer();
     private static final CARTClassificationTrainer randomt = new CARTClassificationTrainer(5,2, 0.0f,1.0f, true,
-            new GiniIndex(), Trainer.DEFAULT_SEED);
+            GINI, Trainer.DEFAULT_SEED);
 
     public static TreeModel<Label> testCART(Pair<Dataset<Label>,Dataset<Label>> p, CARTClassificationTrainer trainer) {
         TreeModel<Label> m = trainer.train(p.getA());
@@ -89,7 +117,7 @@ public class TestCART {
     @Test
     public void testDenseData() {
         Model<Label> model = runDenseData(t);
-        Helpers.testModelSerialization(model,Label.class);
+        Helpers.testModelProtoSerialization(model,Label.class);
     }
 
     @Test
@@ -217,5 +245,69 @@ public class TestCART {
                     new GiniIndex(), Trainer.DEFAULT_SEED);
             t.setInvocationCount(-1);
         });
+    }
+
+    @Test
+    public void testPureLeaf() throws IOException {
+        CSVLoader<Label> loader = new CSVLoader<>(new LabelFactory());
+        Dataset<Label> data = loader.load(TEST_PURE_LEAF_PATH, "Label");
+
+        CARTClassificationTrainer t = new CARTClassificationTrainer(5, 1, 0f, 1f, false, ENTROPY, Trainer.DEFAULT_SEED);
+        TreeModel<Label> model = t.train(data);
+
+        Node<Label> root = model.getRoot();
+        int numNodes = model.countNodes(root);
+        assertEquals(7, numNodes);
+
+        List<Prediction<Label>> predictions = model.predict(data);
+
+        // Pure leaves
+        assertTrue(predictions.get(0).getOutput().fullEquals(new Label("A",1.0)));
+        assertTrue(predictions.get(1).getOutput().fullEquals(new Label("B",1.0)));
+        assertTrue(predictions.get(2).getOutput().fullEquals(new Label("C",1.0)));
+        // Impure leaf
+        Map<String,Label> map = new HashMap<>();
+        map.put("A",new Label("A",0));
+        map.put("B",new Label("B",0));
+        map.put("C",new Label("C",0.5));
+        map.put("D",new Label("D",0.5));
+        Prediction<Label> pred = new Prediction<>(new Label("C", 0.5), map, 0, data.getExample(3), true);
+        assertTrue(predictions.get(3).distributionEquals(pred));
+        assertTrue(predictions.get(4).distributionEquals(pred));
+    }
+
+    @Test
+    public void loadProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(TestCART.class.getResource("cart-clf-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
+            @SuppressWarnings("unchecked")
+            SparseModel<Label> deserModel = (SparseModel<Label>) Model.deserialize(proto);
+
+            assertEquals("4.3.1", deserModel.getProvenance().getTribuoVersion());
+
+            Pair<Dataset<Label>, Dataset<Label>> p = LabelledDataGenerator.denseTrainTest(1.0);
+
+            List<Prediction<Label>> deserOutput = deserModel.predict(p.getB());
+
+            CARTClassificationTrainer trainer = new CARTClassificationTrainer();
+            TreeModel<Label> model = trainer.train(p.getA());
+            List<Prediction<Label>> output = model.predict(p.getB());
+
+            assertEquals(deserOutput.size(), p.getB().size());
+            // No longer passes due to #410 as the test dataset has insufficient signal - https://github.com/oracle/tribuo/pull/410
+            //assertTrue(Helpers.predictionListDistributionEquals(deserOutput, output));
+        }
+    }
+
+    /**
+     * Test protobuf generation method.
+     * @throws IOException If the write failed.
+     */
+    public void generateModel() throws IOException {
+        Pair<Dataset<Label>, Dataset<Label>> p = LabelledDataGenerator.denseTrainTest(1.0);
+        CARTClassificationTrainer trainer = new CARTClassificationTrainer();
+        TreeModel<Label> model = trainer.train(p.getA());
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","classification","dtree","cart-clf-431.tribuo"));
     }
 }

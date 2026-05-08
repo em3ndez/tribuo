@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,13 +29,13 @@ import org.tribuo.OutputFactory;
 import org.tribuo.OutputInfo;
 import org.tribuo.VariableInfo;
 import org.tribuo.impl.DatasetDataCarrier;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.ImmutableSequenceDatasetProto;
 import org.tribuo.protos.core.SequenceDatasetProto;
 import org.tribuo.provenance.DataProvenance;
 import org.tribuo.provenance.DatasetProvenance;
 import org.tribuo.util.Merger;
 
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -45,8 +45,7 @@ import java.util.Set;
  * Whenever an example is added to this dataset it removes features that do not exist in the FeatureMap.
  * The dataset is immutable after construction (unless the examples are modified).
  */
-public class ImmutableSequenceDataset<T extends Output<T>> extends SequenceDataset<T> implements Serializable {
-    private static final long serialVersionUID = 1L;
+public class ImmutableSequenceDataset<T extends Output<T>> extends SequenceDataset<T> {
 
     /**
      * Protobuf serialization version.
@@ -157,16 +156,17 @@ public class ImmutableSequenceDataset<T extends Output<T>> extends SequenceDatas
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"unchecked","rawtypes"}) // guarded & checked by getClass checks.
-    public static ImmutableSequenceDataset<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ImmutableSequenceDataset<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         ImmutableSequenceDatasetProto proto = message.unpack(ImmutableSequenceDatasetProto.class);
-        DatasetDataCarrier<?> carrier = DatasetDataCarrier.deserialize(proto.getMetadata());
+        DatasetDataCarrier<?> carrier = DatasetDataCarrier.deserialize(proto.getMetadata(), deserCache);
         Class<?> outputClass = carrier.outputFactory().getUnknownOutput().getClass();
         FeatureMap fmap = carrier.featureDomain();
         List<SequenceExample<?>> examples = deserializeExamples(proto.getExamplesList(), outputClass, fmap);

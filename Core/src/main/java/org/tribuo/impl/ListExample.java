@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import org.tribuo.Feature;
 import org.tribuo.FeatureMap;
 import org.tribuo.Output;
 import org.tribuo.VariableInfo;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ExampleDataProto;
 import org.tribuo.protos.core.ExampleProto;
@@ -30,7 +31,6 @@ import org.tribuo.transform.Transformer;
 import org.tribuo.transform.TransformerMap;
 import org.tribuo.util.Merger;
 
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -48,9 +48,8 @@ import java.util.logging.Logger;
  * An example that's a simple list of features. It is not guaranteed that feature instances are preserved.
  * @param <T> the type of the features in this example.
  */
-public class ListExample<T extends Output<T>> extends Example<T> implements Serializable {
+public class ListExample<T extends Output<T>> extends Example<T> {
     private static final Logger logger = Logger.getLogger(ListExample.class.getName());
-    private static final long serialVersionUID = 1L;
 
     /**
      * Protobuf serialization version.
@@ -141,11 +140,12 @@ public class ListExample<T extends Output<T>> extends Example<T> implements Seri
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
     @SuppressWarnings({"rawtypes","unchecked"})
-    public static ListExample<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ListExample<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -153,7 +153,7 @@ public class ListExample<T extends Output<T>> extends Example<T> implements Seri
         if (proto.getFeatureNameCount() != proto.getFeatureValueCount()) {
             throw new IllegalStateException("Invalid protobuf, different numbers of feature names and values, found " + proto.getFeatureNameCount() + " names and " + proto.getFeatureValueCount() + " values.");
         }
-        Output<?> output = ProtoUtil.deserialize(proto.getOutput());
+        Output<?> output = ProtoUtil.deserialize(proto.getOutput(), deserCache);
         String[] featureNames = new String[proto.getFeatureNameCount()];
         double[] featureValues = new double[proto.getFeatureValueCount()];
         for (int i = 0; i < proto.getFeatureNameCount(); i++) {
@@ -329,25 +329,23 @@ public class ListExample<T extends Output<T>> extends Example<T> implements Seri
         }
     }
 
+    /**
+     * Adds zero valued features for each feature name in {@code featureNames}.
+     * <p>
+     * {@code featureNames} must be sorted lexicographically using the {@link String}
+     * comparator, and behaviour is undefined otherwise.
+     * @param featureNames A *sorted* list of feature names.
+     */
     @Override
-    protected void densify(List<String> featureList) {
-        int oldSize = features.size();
-        int curPos = 0;
-        for (String curName : featureList) {
-            // If we've reached the end of our old feature set, just insert.
-            if (curPos == oldSize) {
-                features.add(new Feature(curName,0.0));
-            } else {
-                // Check to see if our insertion candidate is the same as the current feature name.
-                int comparison = curName.compareTo(features.get(curPos).getName());
-                if (comparison < 0) {
-                    // If it's earlier, insert it.
-                    features.add(new Feature(curName,0.0));
-                } else if (comparison == 0) {
-                    // Otherwise just bump our pointer, we've already got this feature.
-                    curPos++;
-                }
-            }
+    protected void densify(List<String> featureNames) {
+        Set<String> featureSet = new HashSet<>(featureNames);
+        // Compute intersection
+        for (Feature f : features) {
+            featureSet.remove(f.getName());
+        }
+        // Add missing features
+        for (String s : featureSet) {
+            features.add(new Feature(s,0.0));
         }
         // Sort the features
         sort();

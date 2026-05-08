@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,14 +17,12 @@
 package org.tribuo.common.tree;
 
 import org.tribuo.Output;
-import org.tribuo.math.la.SparseVector;
-
-import java.io.Serializable;
+import org.tribuo.math.la.SGDVector;
 
 /**
  * A node in a decision tree.
  */
-public interface Node<T extends Output<T>> extends Serializable {
+public interface Node<T extends Output<T>> {
 
     /**
      * Is it a leaf node?
@@ -37,7 +35,7 @@ public interface Node<T extends Output<T>> extends Serializable {
      * @param example The example.
      * @return The next node down in the tree.
      */
-    public Node<T> getNextNode(SparseVector example);
+    public Node<T> getNextNode(SGDVector example);
 
     /**
      * The impurity score of this node.

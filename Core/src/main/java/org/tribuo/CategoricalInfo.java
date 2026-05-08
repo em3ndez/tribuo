@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import com.google.protobuf.Any;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.oracle.labs.mlrg.olcut.util.MutableLong;
 import com.oracle.labs.mlrg.olcut.util.MutableNumber;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializableClass;
 import org.tribuo.protos.ProtoSerializableField;
 import org.tribuo.protos.ProtoSerializableKeysValuesField;
@@ -28,7 +29,6 @@ import org.tribuo.protos.core.CategoricalInfoProto;
 import org.tribuo.protos.core.VariableInfoProto;
 import org.tribuo.util.Util;
 
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -59,7 +59,6 @@ import java.util.stream.Collectors;
  */
 @ProtoSerializableClass(version = CategoricalInfo.CURRENT_VERSION, serializedDataClass = CategoricalInfoProto.class)
 public class CategoricalInfo extends SkeletalVariableInfo {
-    private static final long serialVersionUID = 2L;
 
     /**
      * Protobuf serialization version.
@@ -95,15 +94,15 @@ public class CategoricalInfo extends SkeletalVariableInfo {
     /**
      * The values array.
      */
-    protected transient double[] values = null;
+    protected double[] values = null;
     /**
      * The total number of observations (including zeros).
      */
-    protected transient long totalObservations = -1;
+    protected long totalObservations = -1;
     /**
      * The CDF to sample from.
      */
-    protected transient double[] cdf = null;
+    protected double[] cdf = null;
 
     /**
      * Constructs a new empty categorical info for the supplied feature name.
@@ -141,10 +140,11 @@ public class CategoricalInfo extends SkeletalVariableInfo {
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static CategoricalInfo deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static CategoricalInfo deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -483,10 +483,4 @@ public class CategoricalInfo extends SkeletalVariableInfo {
         }
     }
 
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        totalObservations = -1;
-        values = null;
-        cdf = null;
-    }
 }

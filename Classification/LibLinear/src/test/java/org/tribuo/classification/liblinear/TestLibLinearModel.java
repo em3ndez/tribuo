@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,6 +34,7 @@ import org.tribuo.classification.evaluation.LabelEvaluation;
 import org.tribuo.classification.evaluation.LabelEvaluator;
 import org.tribuo.classification.example.LabelledDataGenerator;
 import org.tribuo.classification.liblinear.LinearClassificationType.LinearType;
+import org.tribuo.common.liblinear.LibLinearModel;
 import org.tribuo.data.text.TextDataSource;
 import org.tribuo.data.text.TextFeatureExtractor;
 import org.tribuo.data.text.impl.BasicPipeline;
@@ -45,13 +46,12 @@ import de.bwaldvogel.liblinear.FeatureNode;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.tribuo.interop.onnx.OnnxTestUtils;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.test.Helpers;
 import org.tribuo.util.tokens.impl.BreakIteratorTokenizer;
 
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.ObjectInputStream;
+import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Files;
@@ -70,6 +70,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestLibLinearModel {
     private static final Logger logger = Logger.getLogger(TestLibLinearModel.class.getName());
@@ -111,7 +112,7 @@ public class TestLibLinearModel {
     }
 
     @Test
-    public void testMulticlass() throws IOException, ClassNotFoundException {
+    public void testMulticlass() throws IOException {
         String prefix = "L2R_LR_multiclass";
         LibLinearClassificationModel model = loadModel("/models/L2R_LR_multiclass.model");
         Dataset<Label> examples = loadMulticlassTestDataset(model);
@@ -127,7 +128,7 @@ public class TestLibLinearModel {
         }
     }
 
-    private void checkModelType(LinearType modelType) throws IOException, ClassNotFoundException {
+    private void checkModelType(LinearType modelType) throws IOException {
         String prefix = String.format("model %s", modelType);
         LibLinearClassificationModel model = loadModel(modelType);
         Dataset<Label> examples = loadTestDataset(model);
@@ -143,18 +144,20 @@ public class TestLibLinearModel {
         }
     }
 
-
-    private LibLinearClassificationModel loadModel(LinearType modelType) throws IOException, ClassNotFoundException {
+    private LibLinearClassificationModel loadModel(LinearType modelType) throws IOException {
         String modelPath = "/models/" + modelType + ".model";
         return loadModel(modelPath);
     }
 
-    private LibLinearClassificationModel loadModel(String path) throws IOException, ClassNotFoundException {
+    private LibLinearClassificationModel loadModel(String path) throws IOException {
         URL modelFile = this.getClass().getResource(path);
-        assertNotNull(modelFile, String.format("model for %s does not exist", path));
-        try (ObjectInputStream oin = new ObjectInputStream(modelFile.openStream())) {
-            Object data = oin.readObject();
-            return (LibLinearClassificationModel) data;
+        try (InputStream is = modelFile.openStream()) {
+            @SuppressWarnings("unchecked") // checked by validate call.
+            LibLinearClassificationModel model = (LibLinearClassificationModel) Model.deserializeFromStream(is);
+            return model;
+        } catch (NullPointerException e) {
+            fail(String.format("model for %s does not exist", path));
+            throw e;
         }
     }
 
@@ -220,8 +223,6 @@ public class TestLibLinearModel {
         Model<Label> model = testLibLinear(p);
 
         // Test serialization
-        Helpers.testModelSerialization(model,Label.class);
-
         Helpers.testModelProtoSerialization(model, Label.class, p.getB());
     }
 
@@ -294,6 +295,33 @@ public class TestLibLinearModel {
         onnxFile.toFile().delete();
     }
 
+    @Test
+    public void loadProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(TestLibLinearModel.class.getResource("liblinear-clf-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
+            LibLinearClassificationModel model = (LibLinearClassificationModel) Model.deserialize(proto);
+
+            assertEquals("4.3.1", model.getProvenance().getTribuoVersion());
+
+            Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.denseTrainTest();
+            List<Prediction<Label>> output = model.predict(p.getB());
+            assertEquals(output.size(), p.getB().size());
+        }
+    }
+
+    /**
+     * Test protobuf generation method.
+     * @throws IOException If the write failed.
+     */
+    public void generateModel() throws IOException {
+        Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.denseTrainTest();
+        LinearClassificationType type = new LinearClassificationType(LinearType.L2R_L2LOSS_SVC);
+        LibLinearClassificationTrainer trainer = new LibLinearClassificationTrainer(type,1.0,1000,0.01);
+        LibLinearModel<Label> model = trainer.train(p.getA());
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","classification","liblinear","liblinear-clf-431.tribuo"));
+    }
+
     private static int[] getIndices(FeatureNode[] nodes) {
         int[] indices = new int[nodes.length];
 
@@ -323,7 +351,6 @@ public class TestLibLinearModel {
     }
 
     private static class TestMap extends ImmutableFeatureMap {
-        private static final long serialVersionUID = 1L;
         public TestMap() {
             super();
             CategoricalIDInfo foo = (new CategoricalInfo("FOO")).makeIDInfo(0);

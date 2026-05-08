@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,9 +20,11 @@ import ai.onnxruntime.OrtException;
 import com.oracle.labs.mlrg.olcut.util.Pair;
 import org.tribuo.Dataset;
 import org.tribuo.Model;
+import org.tribuo.Prediction;
 import org.tribuo.common.liblinear.LibLinearModel;
 import org.tribuo.common.liblinear.LibLinearTrainer;
 import org.tribuo.interop.onnx.OnnxTestUtils;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.regression.Regressor;
 import org.tribuo.regression.evaluation.RegressionEvaluation;
 import org.tribuo.regression.evaluation.RegressionEvaluator;
@@ -33,10 +35,12 @@ import org.junit.jupiter.api.Test;
 import org.tribuo.test.Helpers;
 
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.net.URL;
+import java.io.InputStream;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -48,8 +52,6 @@ public class TestLibLinear {
 
     private static final LibLinearRegressionTrainer t = new LibLinearRegressionTrainer(new LinearRegressionType(LinearType.L2R_L2LOSS_SVR_DUAL),1.0,1000,0.1,0.5);
     private static final RegressionEvaluator e = new RegressionEvaluator();
-
-    private static final URL TEST_REGRESSION_REORDER_MODEL = TestLibLinear.class.getResource("liblinear-4.1.0.model");
 
     @BeforeAll
     public static void setup() {
@@ -67,7 +69,6 @@ public class TestLibLinear {
     public void testDenseData() {
         Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
         Model<Regressor> model = testLibLinear(p);
-        Helpers.testModelSerialization(model, Regressor.class);
         Helpers.testModelProtoSerialization(model, Regressor.class, p.getB());
     }
 
@@ -153,25 +154,6 @@ public class TestLibLinear {
     }
 
     @Test
-    public void testRegressionReordering() throws IOException, ClassNotFoundException {
-        try (ObjectInputStream ois = new ObjectInputStream(TEST_REGRESSION_REORDER_MODEL.openStream())) {
-            @SuppressWarnings("unchecked")
-            Model<Regressor> serializedModel = (Model<Regressor>) ois.readObject();
-            Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.threeDimDenseTrainTest(1.0, false);
-            RegressionEvaluation llEval = e.evaluate(serializedModel,p.getB());
-            double expectedDim1 = 0.6634367596601265;
-            double expectedDim2 = 0.6634367596601265;
-            double expectedDim3 = 0.01112107563226139;
-            double expectedAve = 0.4459981983175048;
-
-            assertEquals(expectedDim1,llEval.r2(new Regressor(RegressionDataGenerator.firstDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedDim2,llEval.r2(new Regressor(RegressionDataGenerator.secondDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedDim3,llEval.r2(new Regressor(RegressionDataGenerator.thirdDimensionName,Double.NaN)),1e-6);
-            assertEquals(expectedAve,llEval.averageR2(),1e-6);
-        }
-    }
-
-    @Test
     public void testOnnxSerialization() throws IOException, OrtException {
         Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
         LibLinearRegressionModel model = (LibLinearRegressionModel) t.train(p.getA());
@@ -184,4 +166,32 @@ public class TestLibLinear {
 
         onnxFile.toFile().delete();
     }
+
+    @Test
+    public void loadProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(TestLibLinear.class.getResource("liblinear-reg-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
+            LibLinearRegressionModel model = (LibLinearRegressionModel) Model.deserialize(proto);
+
+            assertEquals("4.3.1", model.getProvenance().getTribuoVersion());
+
+            Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
+            List<Prediction<Regressor>> output = model.predict(p.getB());
+            assertEquals(output.size(), p.getB().size());
+        }
+    }
+
+    /**
+     * Test protobuf generation method.
+     * @throws IOException If the write failed.
+     */
+    public void generateModel() throws IOException {
+        Pair<Dataset<Regressor>,Dataset<Regressor>> p = RegressionDataGenerator.denseTrainTest();
+        LinearRegressionType type = new LinearRegressionType(LinearType.L2R_L2LOSS_SVR);
+        LibLinearRegressionTrainer trainer = new LibLinearRegressionTrainer(type,1.0,1000,0.01,0.05);
+        LibLinearModel<Regressor> model = trainer.train(p.getA());
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","regression","liblinear","liblinear-reg-431.tribuo"));
+    }
+
 }

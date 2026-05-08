@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import com.oracle.labs.mlrg.olcut.util.SortUtil;
 import org.tribuo.math.protos.DenseTensorProto;
 import org.tribuo.math.protos.TensorProto;
 import org.tribuo.math.util.VectorNormalizer;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.util.Util;
 
 import java.nio.ByteBuffer;
@@ -41,7 +42,6 @@ import java.util.stream.Collectors;
  * A dense matrix, backed by a primitive array.
  */
 public class DenseMatrix implements Matrix {
-    private static final long serialVersionUID = 1L;
     private static final Logger logger = Logger.getLogger(DenseMatrix.class.getName());
 
     /**
@@ -186,14 +186,28 @@ public class DenseMatrix implements Matrix {
     }
 
     /**
+     * Creates an identity matrix of the specified size.
+     * @param dimension The matrix dimension.
+     * @return The identity matrix.
+     */
+    public static DenseMatrix createIdentity(int dimension) {
+        double[][] newValues = new double[dimension][dimension];
+        for (int i = 0; i < dimension; i++) {
+            newValues[i][i] = 1.0;
+        }
+        return new DenseMatrix(newValues);
+    }
+
+    /**
      * Deserialization factory.
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static DenseMatrix deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static DenseMatrix deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
@@ -217,7 +231,7 @@ public class DenseMatrix implements Matrix {
                 throw new IllegalArgumentException("Invalid proto, shape must be positive, found " + shape[i] + " at position " + i);
             }
         }
-        int numElements = Util.product(shape);
+        int numElements = Math.multiplyExact(shape[0], shape[1]);
         DoubleBuffer buffer = proto.getValues().asReadOnlyByteBuffer().order(ByteOrder.LITTLE_ENDIAN).asDoubleBuffer();
         if (buffer.remaining() != numElements) {
             throw new IllegalArgumentException("Invalid proto, claimed " + numElements + ", but only had " + buffer.remaining() + " values");
@@ -301,6 +315,24 @@ public class DenseMatrix implements Matrix {
     @Override
     public double get(int i, int j) {
         return values[i][j];
+    }
+
+    /**
+     * Adds {@code other} to this matrix, producing a new {@link DenseMatrix}.
+     * @param other The matrix to add.
+     * @return A new {@link DenseMatrix} where each element value = this.get(i,j) + other.get(i,j).
+     */
+    public DenseMatrix add(DenseMatrix other) {
+        if (dim1 != other.dim1 || dim2 != other.dim2) {
+            throw new IllegalArgumentException("Can't add matrices of different sizes, this " + Arrays.toString(shape) + ", other " + Arrays.toString(other.shape));
+        }
+        double[][] output = new double[dim1][dim2];
+        for (int i = 0; i < dim1; i++) {
+            for (int j = 0; j < dim2; j++) {
+                output[i][j] = get(i,j) + other.get(i,j);
+            }
+        }
+        return new DenseMatrix(output);
     }
 
     /**
@@ -1509,7 +1541,7 @@ public class DenseMatrix implements Matrix {
          */
         @Override
         public double determinant() {
-            double det = 0.0;
+            double det = 1.0;
             for (int i = 0; i < lMatrix.dim1; i++) {
                 det *= lMatrix.values[i][i] * lMatrix.values[i][i];
             }
@@ -1680,7 +1712,7 @@ public class DenseMatrix implements Matrix {
          */
         @Override
         public double determinant() {
-            double det = 0.0;
+            double det = 1.0;
             for (int i = 0; i < upper.dim1; i++) {
                 det *= upper.values[i][i];
             }

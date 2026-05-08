@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import com.oracle.labs.mlrg.olcut.util.Pair;
 import org.tribuo.Dataset;
 import org.tribuo.Example;
 import org.tribuo.Model;
+import org.tribuo.Prediction;
 import org.tribuo.Trainer;
 import org.tribuo.classification.Label;
 import org.tribuo.classification.dtree.impurity.GiniIndex;
@@ -31,21 +32,31 @@ import org.tribuo.classification.evaluation.LabelEvaluator;
 import org.tribuo.classification.example.LabelledDataGenerator;
 import org.tribuo.common.tree.ExtraTreesTrainer;
 import org.tribuo.common.tree.RandomForestTrainer;
+import org.tribuo.common.tree.TreeEnsembleModel;
 import org.tribuo.dataset.DatasetView;
 import org.tribuo.ensemble.BaggingTrainer;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.tribuo.ensemble.WeightedEnsembleModel;
+import org.tribuo.protos.core.ModelProto;
 import org.tribuo.test.Helpers;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.tribuo.common.tree.AbstractCARTTrainer.MIN_EXAMPLES;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.tribuo.common.tree.AbstractCARTTrainer.MIN_EXAMPLES;
 
 /**
  * These tests live here rather than in Classification/Core because otherwise it would induce circularity in the build.
@@ -117,6 +128,29 @@ public class TestClassificationEnsembles {
         return m;
     }
 
+    /**
+     * Tests parallel bagging with 2 threads to exercise the parallel training
+     * codepath.
+     * @param p The train/test dataset pair.
+     * @return The trained model.
+     */
+    public Model<Label> testBaggingParallel(
+            Pair<Dataset<Label>,Dataset<Label>> p) {
+        BaggingTrainer<Label> parallelBagT = new BaggingTrainer<>(t,
+                new VotingCombiner(), 10, Trainer.DEFAULT_SEED, 2);
+        Model<Label> m = parallelBagT.train(p.getA());
+        LabelEvaluator e = new LabelEvaluator();
+        LabelEvaluation evaluation = e.evaluate(m,p.getB());
+        Map<String, List<Pair<String,Double>>> features =
+                m.getTopFeatures(3);
+        Assertions.assertNotNull(features);
+        Assertions.assertFalse(features.isEmpty());
+        features = m.getTopFeatures(-1);
+        Assertions.assertNotNull(features);
+        Assertions.assertFalse(features.isEmpty());
+        return m;
+    }
+
     public Model<Label> testRandomForest(Pair<Dataset<Label>,Dataset<Label>> p) {
         Model<Label> m = rfT.train(p.getA());
         LabelEvaluator e = new LabelEvaluator();
@@ -148,16 +182,21 @@ public class TestClassificationEnsembles {
         Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.denseTrainTest();
 
         Model<Label> boost = testAdaBoost(p);
-        Helpers.testModelSerialization(boost,Label.class);
+        Helpers.testModelProtoSerialization(boost,Label.class);
 
         Model<Label> bag = testBagging(p);
-        Helpers.testModelSerialization(bag,Label.class);
+        Helpers.testModelProtoSerialization(bag,Label.class);
+
+        Model<Label> parallelBag = testBaggingParallel(p);
+        Helpers.testModelProtoSerialization(parallelBag,Label.class);
 
         Model<Label> rf = testRandomForest(p);
-        Helpers.testModelSerialization(rf,Label.class);
+        Model<Label> deserRf = Helpers.testModelProtoSerialization(rf,Label.class);
+        assertTrue(deserRf instanceof TreeEnsembleModel, "RandomForest should deserialize as TreeEnsembleModel");
 
         Model<Label> extra = testExtraTrees(p);
-        Helpers.testModelSerialization(extra,Label.class);
+        Model<Label> deserExtra = Helpers.testModelProtoSerialization(extra,Label.class);
+        assertTrue(deserExtra instanceof TreeEnsembleModel, "ExtraTrees should deserialize as TreeEnsembleModel");
     }
 
     @Test
@@ -165,6 +204,7 @@ public class TestClassificationEnsembles {
         Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.sparseTrainTest();
         testAdaBoost(p);
         testBagging(p);
+        testBaggingParallel(p);
         testRandomForest(p);
         testExtraTrees(p);
     }
@@ -174,6 +214,7 @@ public class TestClassificationEnsembles {
         Pair<Dataset<Label>,Dataset<Label>> p = LabelledDataGenerator.binarySparseTrainTest();
         testAdaBoost(p);
         testBagging(p);
+        testBaggingParallel(p);
         testRandomForest(p);
         testExtraTrees(p);
     }
@@ -192,5 +233,39 @@ public class TestClassificationEnsembles {
             new RandomForestTrainer<>(randomTree,new VotingCombiner(),
                     10);
         });
+    }
+
+    @Test
+    public void load431ProtobufModel() throws IOException, URISyntaxException {
+        Path path = Paths.get(TestCART.class.getResource("adaboost-clf-431.tribuo").toURI());
+        try (InputStream fis = Files.newInputStream(path)) {
+            ModelProto proto = ModelProto.parseFrom(fis);
+            @SuppressWarnings("unchecked")
+            WeightedEnsembleModel<Label> deserModel = (WeightedEnsembleModel<Label>) Model.deserialize(proto);
+
+            assertEquals("4.3.1", deserModel.getProvenance().getTribuoVersion());
+
+            Pair<Dataset<Label>, Dataset<Label>> p = LabelledDataGenerator.denseTrainTest(1.0);
+
+            List<Prediction<Label>> deserOutput = deserModel.predict(p.getB());
+
+            AdaBoostTrainer trainer = new AdaBoostTrainer(t,10);
+            WeightedEnsembleModel<Label> model = trainer.train(p.getA());
+            List<Prediction<Label>> output = model.predict(p.getB());
+
+            assertEquals(deserOutput.size(), p.getB().size());
+            assertTrue(Helpers.predictionListDistributionEquals(deserOutput, output));
+        }
+    }
+
+    /**
+     * Test protobuf generation method.
+     * @throws IOException If the write failed.
+     */
+    public void generate431Model() throws IOException {
+        Pair<Dataset<Label>, Dataset<Label>> p = LabelledDataGenerator.denseTrainTest(1.0);
+        AdaBoostTrainer trainer = new AdaBoostTrainer(t,10);
+        WeightedEnsembleModel<Label> model = trainer.train(p.getA());
+        Helpers.writeProtobuf(model, Paths.get("src","test","resources","org","tribuo","classification","dtree","adaboost-clf-431.tribuo"));
     }
 }

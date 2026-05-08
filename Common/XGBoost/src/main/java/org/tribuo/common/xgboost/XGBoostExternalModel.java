@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,17 +40,15 @@ import org.tribuo.interop.ExternalDatasetProvenance;
 import org.tribuo.interop.ExternalModel;
 import org.tribuo.interop.ExternalTrainerProvenance;
 import org.tribuo.math.la.SparseVector;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ModelProto;
 import org.tribuo.provenance.DatasetProvenance;
 import org.tribuo.provenance.ModelProvenance;
 import org.tribuo.util.Util;
 
-import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.file.Files;
@@ -95,7 +93,6 @@ import java.util.logging.Logger;
  * OpenMP support after installing libomp from homebrew if necessary.
  */
 public final class XGBoostExternalModel<T extends Output<T>> extends ExternalModel<T,DMatrix,float[][]> {
-    private static final long serialVersionUID = 1L;
 
     private static final Logger logger = Logger.getLogger(XGBoostExternalModel.class.getName());
 
@@ -106,10 +103,7 @@ public final class XGBoostExternalModel<T extends Output<T>> extends ExternalMod
 
     private final XGBoostOutputConverter<T> converter;
 
-    /**
-     * Transient as we rely upon the native serialisation mechanism to bytes rather than Java serializing the Booster.
-     */
-    protected transient Booster model;
+    private final Booster model;
 
     private XGBoostExternalModel(String name, ModelProvenance provenance,
                                  ImmutableFeatureMap featureIDMap, ImmutableOutputInfo<T> outputIDInfo,
@@ -135,21 +129,22 @@ public final class XGBoostExternalModel<T extends Output<T>> extends ExternalMod
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @throws XGBoostError If the XGBoost byte array failed to parse.
      * @throws IOException If the XGBoost byte array failed to parse.
      * @return The deserialized object.
      */
     @SuppressWarnings({"unchecked","rawtypes"}) // output converter and domain are checked via getClass.
-    public static XGBoostExternalModel<?> deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException, XGBoostError, IOException {
+    public static XGBoostExternalModel<?> deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException, XGBoostError, IOException {
         if (version < 0 || version > CURRENT_VERSION) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + CURRENT_VERSION);
         }
         XGBoostExternalModelProto proto = message.unpack(XGBoostExternalModelProto.class);
 
-        XGBoostOutputConverter<?> converter = ProtoUtil.deserialize(proto.getConverter());
+        XGBoostOutputConverter<?> converter = ProtoUtil.deserialize(proto.getConverter(), deserCache);
         Class<?> converterWitness = converter.getTypeWitness();
-        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata());
+        ModelDataCarrier<?> carrier = ModelDataCarrier.deserialize(proto.getMetadata(), deserCache);
         if (!carrier.outputDomain().getOutput(0).getClass().equals(converterWitness)) {
             throw new IllegalStateException("Invalid protobuf, output domain does not match the converter, found " + carrier.outputDomain().getClass() + " and " + converterWitness);
         }
@@ -236,7 +231,7 @@ public final class XGBoostExternalModel<T extends Output<T>> extends ExternalMod
                 }
             }
             List<Pair<String,Double>> list = new ArrayList<>();
-            while(q.size() > 0) {
+            while(!q.isEmpty()) {
                 list.add(q.poll());
             }
             Collections.reverse(list);
@@ -262,7 +257,7 @@ public final class XGBoostExternalModel<T extends Output<T>> extends ExternalMod
             Collectors.toList()));
         modelBuilder.addAllBackwardFeatureMapping(Arrays.stream(featureBackwardMapping).boxed().collect(Collectors.toList()));
         try {
-            modelBuilder.setModel(ByteString.copyFrom(model.toByteArray()));
+            modelBuilder.setModel(ByteString.copyFrom(model.toByteArray("ubj")));
         } catch (XGBoostError e) {
             throw new IllegalStateException("Failed to serialize XGBoost model");
         }
@@ -386,24 +381,4 @@ public final class XGBoostExternalModel<T extends Output<T>> extends ExternalMod
                 featureMapping,model,outputFunc);
     }
 
-    private void writeObject(ObjectOutputStream out) throws IOException {
-        out.defaultWriteObject();
-        try {
-            byte[] serialisedBooster = model.toByteArray();
-            out.writeObject(serialisedBooster);
-        } catch (XGBoostError e) {
-            throw new IOException("Failed to serialize the XGBoost model",e);
-        }
-    }
-
-    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        try {
-            // Now read in the byte array and rebuild the Booster
-            byte[] serialisedBooster = (byte[]) in.readObject();
-            model = XGBoost.loadModel(new ByteArrayInputStream(serialisedBooster));
-        } catch (XGBoostError e) {
-            throw new IOException("Failed to deserialize the XGBoost model",e);
-        }
-    }
 }

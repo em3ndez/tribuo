@@ -20,6 +20,7 @@ import com.google.protobuf.ByteString;
 import org.tensorflow.Graph;
 import org.tensorflow.GraphOperation;
 import org.tensorflow.GraphOperationBuilder;
+import org.tensorflow.Result;
 import org.tensorflow.Session;
 import org.tensorflow.Tensor;
 import org.tensorflow.ndarray.Shape;
@@ -30,7 +31,6 @@ import org.tensorflow.types.family.TType;
 import org.tribuo.interop.tensorflow.protos.TensorTupleProto;
 import org.tribuo.util.Util;
 
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -111,26 +111,23 @@ public abstract class TensorFlowUtil {
             runner.fetch(s);
         }
 
-        List<Tensor> output = runner.run();
+        try (Result output = runner.run()) {
+            if (output.size() != variableNames.size()) {
+                throw new IllegalStateException("Failed to annotate all requested variables. Requested " + variableNames.size() + ", found " + output.size());
+            }
 
-        if (output.size() != variableNames.size()) {
-            closeTensorCollection(output);
-            throw new IllegalStateException("Failed to annotate all requested variables. Requested " + variableNames.size() + ", found " + output.size());
+            Scope scope = graph.baseScope();
+
+            for (int i = 0; i < output.size(); i++) {
+                GraphOperationBuilder builder = graph.opBuilder(PLACEHOLDER, generatePlaceholderName(variableNames.get(i)), scope);
+                builder.setAttr(DTYPE, output.get(i).dataType());
+                GraphOperation o = builder.build();
+                builder = graph.opBuilder(ASSIGN_OP, variableNames.get(i) + "/" + ASSIGN_PLACEHOLDER, scope);
+                builder.addInput(opMap.get(variableNames.get(i)).output(0));
+                builder.addInput(o.output(0));
+                builder.build();
+            }
         }
-
-        Scope scope = graph.baseScope();
-
-        for (int i = 0; i < output.size(); i++) {
-            GraphOperationBuilder builder = graph.opBuilder(PLACEHOLDER, generatePlaceholderName(variableNames.get(i)),scope);
-            builder.setAttr(DTYPE, output.get(i).dataType());
-            GraphOperation o = builder.build();
-            builder = graph.opBuilder(ASSIGN_OP, variableNames.get(i) + "/" + ASSIGN_PLACEHOLDER,scope);
-            builder.addInput(opMap.get(variableNames.get(i)).output(0));
-            builder.addInput(o.output(0));
-            builder.build();
-        }
-
-        closeTensorCollection(output);
     }
 
     /**
@@ -165,23 +162,20 @@ public abstract class TensorFlowUtil {
         for (String s : variableNames) {
             runner.fetch(s);
         }
-        List<Tensor> output = runner.run();
+        try (Result output = runner.run()) {
+            if (output.size() != variableNames.size()) {
+                throw new IllegalStateException("Failed to serialise all requested variables. Requested " + variableNames.size() + ", found " + output.size());
+            }
 
-        if (output.size() != variableNames.size()) {
-            closeTensorCollection(output);
-            throw new IllegalStateException("Failed to serialise all requested variables. Requested " + variableNames.size() + ", found " + output.size());
+            Map<String, TensorTuple> tensorMap = new HashMap<>();
+            for (int i = 0; i < variableNames.size(); i++) {
+                String name = variableNames.get(i);
+                Tensor tensor = output.get(i);
+                tensorMap.put(name, TensorTuple.of((TType) tensor));
+            }
+
+            return tensorMap;
         }
-
-        Map<String, TensorTuple> tensorMap = new HashMap<>();
-        for (int i = 0; i < variableNames.size(); i++) {
-            String name = variableNames.get(i);
-            Tensor tensor = output.get(i);
-            tensorMap.put(name, TensorTuple.of((TType)tensor));
-        }
-
-        closeTensorCollection(output);
-
-        return tensorMap;
     }
 
     /**
@@ -210,8 +204,7 @@ public abstract class TensorFlowUtil {
      * <p>
      * It's almost a record.
      */
-    public static final class TensorTuple implements Serializable {
-        private static final long serialVersionUID = 1L;
+    public static final class TensorTuple {
 
         /**
          * The tensor class name.

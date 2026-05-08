@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import com.oracle.labs.mlrg.olcut.provenance.io.ObjectMarshalledProvenance;
 import com.oracle.labs.mlrg.olcut.util.Pair;
 
 import org.tribuo.impl.ModelDataCarrier;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.ProtoSerializable;
 import org.tribuo.protos.ProtoUtil;
 import org.tribuo.protos.core.ModelProto;
@@ -32,7 +33,6 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -53,8 +53,7 @@ import java.util.Set;
  * of Tribuo.
  * @param <T> the type of prediction produced by the model.
  */
-public abstract class Model<T extends Output<T>> implements ProtoSerializable<ModelProto>, Provenancable<ModelProvenance>, Serializable {
-    private static final long serialVersionUID = 2L;
+public abstract class Model<T extends Output<T>> implements ProtoSerializable<ModelProto>, Provenancable<ModelProvenance> {
 
     /**
      * Used in getTopFeatures when the Model doesn't support per output feature lists.
@@ -334,11 +333,6 @@ public abstract class Model<T extends Output<T>> implements ProtoSerializable<Mo
         }
     }
 
-    @Override
-    public ModelProto serialize() {
-        throw new UnsupportedOperationException("The default implementation of Model.serialize() must be overridden to support protobuf serialization.");
-    }
-
     /**
      * Serializes this model to a {@link ModelProto} and writes it to the supplied path.
      * @param path The path to write to.
@@ -368,7 +362,17 @@ public abstract class Model<T extends Output<T>> implements ProtoSerializable<Mo
      * @return The model.
      */
     public static Model<?> deserialize(ModelProto proto) {
-        return ProtoUtil.deserialize(proto);
+        return deserialize(proto, new ProtoDeserializationCache());
+    }
+
+    /**
+     * Deserializes the model from the supplied protobuf.
+     * @param proto The protobuf to deserialize.
+     * @param deserCache The deserialization cache to use.
+     * @return The model.
+     */
+    public static Model<?> deserialize(ModelProto proto, ProtoDeserializationCache deserCache) {
+        return ProtoUtil.deserialize(proto, deserCache);
     }
 
     /**

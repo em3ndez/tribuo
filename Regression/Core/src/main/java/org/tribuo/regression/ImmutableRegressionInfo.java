@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +22,10 @@ import com.oracle.labs.mlrg.olcut.util.MutableDouble;
 import com.oracle.labs.mlrg.olcut.util.MutableLong;
 import com.oracle.labs.mlrg.olcut.util.Pair;
 import org.tribuo.ImmutableOutputInfo;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.OutputDomainProto;
 import org.tribuo.regression.protos.ImmutableRegressionInfoProto;
 
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
@@ -48,18 +48,16 @@ import java.util.logging.Logger;
 public class ImmutableRegressionInfo extends RegressionInfo implements ImmutableOutputInfo<Regressor> {
     private static final Logger logger = Logger.getLogger(ImmutableRegressionInfo.class.getName());
 
-    private static final long serialVersionUID = 2L;
-
     private final Map<Integer,String> idLabelMap;
 
     private final Map<String,Integer> labelIDMap;
 
     private final Set<Regressor> domain;
 
-    private transient double[] minArray;
-    private transient double[] maxArray;
-    private transient double[] meanArray;
-    private transient double[] varianceArray;
+    private double[] minArray;
+    private double[] maxArray;
+    private double[] meanArray;
+    private double[] varianceArray;
 
     /**
      * Copies an ImmutableRegressionInfo including the ids.
@@ -168,10 +166,11 @@ public class ImmutableRegressionInfo extends RegressionInfo implements Immutable
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static ImmutableRegressionInfo deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ImmutableRegressionInfo deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > 0) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + 0);
         }
@@ -504,10 +503,4 @@ public class ImmutableRegressionInfo extends RegressionInfo implements Immutable
         }
     }
 
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-
-        // Rebuild statistic arrays
-        computeStatisticArrays();
-    }
 }

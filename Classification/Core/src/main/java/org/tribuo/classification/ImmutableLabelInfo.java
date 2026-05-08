@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import com.oracle.labs.mlrg.olcut.util.MutableLong;
 import com.oracle.labs.mlrg.olcut.util.Pair;
 import org.tribuo.ImmutableOutputInfo;
 import org.tribuo.classification.protos.ImmutableLabelInfoProto;
+import org.tribuo.protos.ProtoDeserializationCache;
 import org.tribuo.protos.core.OutputDomainProto;
 
 import java.io.IOException;
@@ -43,8 +44,6 @@ import java.util.logging.Logger;
  */
 public class ImmutableLabelInfo extends LabelInfo implements ImmutableOutputInfo<Label> {
     private static final Logger logger = Logger.getLogger(ImmutableLabelInfo.class.getName());
-
-    private static final long serialVersionUID = 1L;
 
     private final Map<Integer,String> idLabelMap;
 
@@ -111,10 +110,11 @@ public class ImmutableLabelInfo extends LabelInfo implements ImmutableOutputInfo
      * @param version The serialized object version.
      * @param className The class name.
      * @param message The serialized data.
+     * @param deserCache The deserialization cache for deduping model metadata.
      * @throws InvalidProtocolBufferException If the protobuf could not be parsed from the {@code message}.
      * @return The deserialized object.
      */
-    public static ImmutableLabelInfo deserializeFromProto(int version, String className, Any message) throws InvalidProtocolBufferException {
+    public static ImmutableLabelInfo deserializeFromProto(int version, String className, Any message, ProtoDeserializationCache deserCache) throws InvalidProtocolBufferException {
         if (version < 0 || version > 0) {
             throw new IllegalArgumentException("Unknown version " + version + ", this class supports at most version " + 0);
         }
@@ -302,11 +302,5 @@ public class ImmutableLabelInfo extends LabelInfo implements ImmutableOutputInfo
             Map.Entry<Integer,String> e = itr.next();
             return new Pair<>(e.getKey(),new Label(e.getValue()));
         }
-    }
-
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-
-        domain = Collections.unmodifiableSet(new HashSet<>(labels.values()));
     }
 }

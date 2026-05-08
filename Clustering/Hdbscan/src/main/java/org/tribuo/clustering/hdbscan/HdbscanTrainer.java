@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.tribuo.clustering.hdbscan;
 
 import com.oracle.labs.mlrg.olcut.config.Config;
@@ -31,7 +32,6 @@ import org.tribuo.clustering.hdbscan.protos.ClusterExemplarProto;
 import org.tribuo.math.distance.DistanceType;
 import org.tribuo.math.la.DenseVector;
 import org.tribuo.math.la.SGDVector;
-import org.tribuo.math.la.SparseVector;
 import org.tribuo.math.la.Tensor;
 import org.tribuo.math.neighbour.NeighboursQuery;
 import org.tribuo.math.neighbour.NeighboursQueryFactory;
@@ -41,7 +41,6 @@ import org.tribuo.provenance.ModelProvenance;
 import org.tribuo.provenance.TrainerProvenance;
 import org.tribuo.provenance.impl.TrainerProvenanceImpl;
 
-import java.io.Serializable;
 import java.time.OffsetDateTime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -56,6 +55,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.PriorityQueue;
+import java.util.SplittableRandom;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.logging.Level;
@@ -149,6 +149,12 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
     @Config(description = "The nearest neighbour implementation factory to use.")
     private NeighboursQueryFactory neighboursQueryFactory;
 
+    @Config(description = "The seed to use in the event cluster exemplars need to be determined with random samples " +
+        "from the members of a cluster.")
+    private long exemplarSampleSeed = Trainer.DEFAULT_SEED;
+
+    private SplittableRandom rng;
+
     private int trainInvocationCounter;
 
     /**
@@ -199,6 +205,28 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
         this.k = k;
         this.numThreads = numThreads;
         this.neighboursQueryFactory = NeighboursQueryFactoryType.getNeighboursQueryFactory(nqFactoryType, dist, numThreads);
+        postConfig();
+    }
+
+    /**
+     * Constructs an HDBSCAN* trainer using the supplied parameters.
+     *
+     * @param minClusterSize The minimum number of points required to form a cluster.
+     * @param dist The distance function.
+     * @param k The number of nearest-neighbors to use in the initial density approximation.
+     * @param numThreads The number of threads.
+     * @param nqFactoryType The nearest neighbour query implementation factory to use.
+     * @param exemplarSampleSeed The seed to use when sampling cluster exemplars at random from members of a cluster.
+     */
+    public HdbscanTrainer(int minClusterSize, org.tribuo.math.distance.Distance dist, int k, int numThreads,
+                          NeighboursQueryFactoryType nqFactoryType, long exemplarSampleSeed) {
+        this.minClusterSize = minClusterSize;
+        this.dist = dist;
+        this.k = k;
+        this.numThreads = numThreads;
+        this.neighboursQueryFactory = NeighboursQueryFactoryType.getNeighboursQueryFactory(nqFactoryType, dist, numThreads);
+        this.exemplarSampleSeed = exemplarSampleSeed;
+        postConfig();
     }
 
     /**
@@ -213,6 +241,7 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
         this.dist = neighboursQueryFactory.getDistance();
         this.k = k;
         this.neighboursQueryFactory = neighboursQueryFactory;
+        postConfig();
     }
 
     /**
@@ -239,26 +268,25 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
             }
         }
 
+        this.rng = new SplittableRandom(exemplarSampleSeed);
     }
 
     @Override
     public HdbscanModel train(Dataset<ClusterID> examples, Map<String, Provenance> runProvenance) {
         // increment the invocation count.
         TrainerProvenance trainerProvenance;
+        SplittableRandom localRNG;
         synchronized (this) {
             trainerProvenance = getProvenance();
             trainInvocationCounter++;
+            localRNG = rng.split();
         }
         ImmutableFeatureMap featureMap = examples.getFeatureIDMap();
 
         SGDVector[] data = new SGDVector[examples.size()];
         int n = 0;
         for (Example<ClusterID> example : examples) {
-            if (example.size() == featureMap.size()) {
-                data[n] = DenseVector.createDenseVector(example, featureMap, false);
-            } else {
-                data[n] = SparseVector.createSparseVector(example, featureMap, false);
-            }
+            data[n] = SGDVector.createFromExample(example, featureMap, false);
             n++;
         }
 
@@ -283,7 +311,7 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
         ImmutableOutputInfo<ClusterID> outputMap = new ImmutableClusteringInfo(counts);
 
         // Compute the cluster exemplars.
-        List<ClusterExemplar> clusterExemplars = computeExemplars(data, clusterAssignments, dist);
+        List<ClusterExemplar> clusterExemplars = computeExemplars(data, clusterAssignments, dist, localRNG);
 
         // Get the outlier score value for points that are predicted as noise points.
         double noisePointsOutlierScore = getNoisePointsOutlierScore(clusterAssignments);
@@ -311,8 +339,10 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
     public void setInvocationCount(int newInvocationCount) {
         if(newInvocationCount < 0){
             throw new IllegalArgumentException("The supplied invocationCount is less than zero.");
-        } else {
-            trainInvocationCounter = newInvocationCount;
+        }
+
+        for (trainInvocationCounter = 0; trainInvocationCounter < newInvocationCount; trainInvocationCounter++){
+            SplittableRandom localRNG = rng.split();
         }
     }
 
@@ -754,10 +784,11 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
      * @param data An array of {@link DenseVector} containing the data.
      * @param clusterAssignments A map of the cluster labels, and the points assigned to them.
      * @param dist The distance metric to employ.
+     * @param rng The RNG to use.
      * @return A list of {@link ClusterExemplar}s which are used for predictions.
      */
     private static List<ClusterExemplar> computeExemplars(SGDVector[] data, Map<Integer, List<Pair<Double, Integer>>> clusterAssignments,
-                                                          org.tribuo.math.distance.Distance dist) {
+                                                          org.tribuo.math.distance.Distance dist, SplittableRandom rng) {
         List<ClusterExemplar> clusterExemplars = new ArrayList<>();
         // The formula to calculate the exemplar number. This calculates the number of exemplars to be used for this
         // configuration. The appropriate number of exemplars is important for prediction. At the time, this
@@ -778,31 +809,67 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
                 if (numExemplarsThisCluster == 0) {
                     numExemplarsThisCluster = 1;
                 }
-                else if (numExemplarsThisCluster > outlierScoreIndexTree.size()) {
-                    numExemplarsThisCluster = outlierScoreIndexTree.size();
-                }
+                // In the most common situation, the number of exemplars is less than the size of the tree
+                if (numExemplarsThisCluster < outlierScoreIndexTree.size()) {
+                    // First, get the entries that will be used for cluster exemplars.
+                    // The first node is polled from the tree, which has the lowest outlier score out of the remaining
+                    // points assigned this cluster.
+                    List<Entry<Double, Integer>> partialClusterExemplars = new ArrayList<>();
+                    Stream<Integer> intStream = IntStream.range(0, numExemplarsThisCluster).boxed();
+                    intStream.forEach((i) -> partialClusterExemplars.add(outlierScoreIndexTree.pollFirstEntry()));
 
-                // First, get the entries that will be used for cluster exemplars.
-                // The first node is polled from the tree, which has the lowest outlier score out of the remaining
-                // points assigned this cluster.
-                List<Entry<Double, Integer>> partialClusterExemplars = new ArrayList<>();
-                Stream<Integer> intStream = IntStream.range(0, numExemplarsThisCluster).boxed();
-                intStream.forEach((i) -> partialClusterExemplars.add(outlierScoreIndexTree.pollFirstEntry()));
-
-                // For each of the partial exemplars in this cluster, iterate the remaining nodes in the tree to find
-                // the maximum distance between the exemplar and the members of the cluster. The other exemplars don't
-                // need to be checked here since they won't be on the fringe of the cluster.
-                for (Entry<Double, Integer> partialClusterExemplar : partialClusterExemplars) {
-                    SGDVector features = data[partialClusterExemplar.getValue()];
-                    double maxInnerDist = Double.NEGATIVE_INFINITY;
-                    for (Entry<Double, Integer> entry : outlierScoreIndexTree.entrySet()) {
-                        double distance = dist.computeDistance(features, data[entry.getValue()]);
-                        if (distance > maxInnerDist){
-                            maxInnerDist = distance;
+                    // For each of the partial exemplars in this cluster, iterate the remaining nodes in the tree to find
+                    // the maximum distance between the exemplar and the members of the cluster. The other exemplars don't
+                    // need to be checked here since they won't be on the fringe of the cluster.
+                    for (Entry<Double, Integer> partialClusterExemplar : partialClusterExemplars) {
+                        SGDVector features = data[partialClusterExemplar.getValue()];
+                        double maxInnerDist = Double.NEGATIVE_INFINITY;
+                        for (Entry<Double, Integer> entry : outlierScoreIndexTree.entrySet()) {
+                            double distance = dist.computeDistance(features, data[entry.getValue()]);
+                            if (distance > maxInnerDist) {
+                                maxInnerDist = distance;
+                            }
                         }
+                        clusterExemplars.add(new ClusterExemplar(clusterLabel, partialClusterExemplar.getKey(), features,
+                                maxInnerDist));
                     }
-                    clusterExemplars.add(new ClusterExemplar(clusterLabel, partialClusterExemplar.getKey(), features,
-                                                             maxInnerDist));
+                }
+                // Otherwise, the number of exemplars is greater than the size of the tree, which is most likely to occur
+                // with a contrived dataset. This indicates that there were several points in this cluster with non-unique
+                // outlier scores.
+                else {
+                    int outlierScoreTreeSize = outlierScoreIndexTree.size();
+                    List<Pair<Double, Integer>> partialClusterExemplarsList = new ArrayList<>();
+                    // When many points in the cluster have non-unique outlier scores, first we'll collect the items from
+                    // the tree.
+                    Stream<Integer> intStreamTree = IntStream.range(0, outlierScoreTreeSize).boxed();
+                    intStreamTree.forEach((i) -> {
+                        Entry<Double, Integer> treeEntry = outlierScoreIndexTree.pollFirstEntry();
+                        partialClusterExemplarsList.add(new Pair<>(treeEntry.getKey(), treeEntry.getValue()));
+                    });
+
+                    // To determine the remaining exemplars, the best thing to do is randomly sample them from all the
+                    // points in this cluster. This could introduce duplicate exemplar points, but that is safer than
+                    // reducing the number of exemplars.
+                    int numSamples = numExemplarsThisCluster - outlierScoreTreeSize;
+                    Stream<Integer> intStreamSamples = rng.ints(numSamples, 0, outlierScoreIndexList.size()).boxed();
+                    intStreamSamples.forEach((i) -> partialClusterExemplarsList.add(outlierScoreIndexList.get(i)));
+
+                    // For each of the partial exemplars in this cluster, iterate the nodes in the list to find the
+                    // maximum distance between the exemplar and the members of the cluster. This exhaustive search
+                    // ensures we always reach the fringe of the cluster.
+                    for (Pair<Double, Integer> partialClusterExemplar : partialClusterExemplarsList) {
+                        SGDVector features = data[partialClusterExemplar.getB()];
+                        double maxInnerDist = Double.NEGATIVE_INFINITY;
+                        for (Pair<Double, Integer> outlierScorePair : outlierScoreIndexList) {
+                            double distance = dist.computeDistance(features, data[outlierScorePair.getB()]);
+                            if (distance > maxInnerDist){
+                                maxInnerDist = distance;
+                            }
+                        }
+                        clusterExemplars.add(new ClusterExemplar(clusterLabel, partialClusterExemplar.getA(), features,
+                                maxInnerDist));
+                    }
                 }
             }
         }
@@ -844,8 +911,7 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
     /**
      * A cluster exemplar, with attributes for the point's label, outlier score and its features.
      */
-    public final static class ClusterExemplar implements Serializable {
-        private static final long serialVersionUID = 1L;
+    public final static class ClusterExemplar {
 
         private final Integer label;
         private final Double outlierScore;
@@ -893,8 +959,7 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
         public Double getMaxDistToEdge() {
             if (maxDistToEdge != null) {
                 return maxDistToEdge;
-            }
-            else {
+            } else {
                 return Double.NEGATIVE_INFINITY;
             }
         }
@@ -932,7 +997,7 @@ public final class HdbscanTrainer implements Trainer<ClusterID> {
             builder.setLabel(label);
             builder.setOutlierScore(outlierScore);
             builder.setFeatures(features.serialize());
-            builder.setMaxDistToEdge(maxDistToEdge);
+            builder.setMaxDistToEdge(getMaxDistToEdge());
 
             return builder.build();
         }
